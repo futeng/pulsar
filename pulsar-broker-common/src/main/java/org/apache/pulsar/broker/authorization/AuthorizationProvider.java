@@ -81,8 +81,14 @@ public interface AuthorizationProvider extends Closeable {
      */
     default CompletableFuture<Boolean> isTenantAdmin(String tenant, String role, TenantInfo tenantInfo,
                                                      AuthenticationDataSource authenticationData) {
+<<<<<<< HEAD
         return CompletableFuture.completedFuture(role != null && tenantInfo.getAdminRoles() != null
                 && tenantInfo.getAdminRoles().contains(role));
+=======
+        return CompletableFuture.completedFuture(
+                role != null && tenantInfo.getAdminRoles() != null && tenantInfo.getAdminRoles()
+                        .contains(role));
+>>>>>>> 5a236385f4a28d3a89fda8a18c998616e2fbc811
     }
 
     /**

@@ -96,6 +96,8 @@ public class ServiceConfiguration implements PulsarConfiguration {
     @Category
     private static final String CATEGORY_SASL_AUTH = "SASL Authentication Provider";
     @Category
+    private static final String CATEGORY_RANGER_AUTHORI = "Ranger Authorization Provider";
+    @Category
     private static final String CATEGORY_HTTP = "HTTP";
     @Category
     private static final String CATEGORY_TRANSACTION = "Transaction";
@@ -1477,7 +1479,18 @@ public class ServiceConfiguration implements PulsarConfiguration {
     )
     private String kinitCommand = "/usr/bin/kinit";
 
+<<<<<<< HEAD
     /**** --- BookKeeper Client. --- ****/
+=======
+    /**** --- Ranger Authorization Provider --- ****/
+    @FieldContext(
+            category = CATEGORY_RANGER_AUTHORI,
+            doc = "Ranger Service Target"
+    )
+    private String rangerServiceTarget = null;
+
+    /**** --- BookKeeper Client --- ****/
+>>>>>>> 5a236385f4a28d3a89fda8a18c998616e2fbc811
     @FieldContext(
         category = CATEGORY_STORAGE_BK,
         doc = "Metadata service uri that bookkeeper is used for loading corresponding metadata driver"

@@ -71,9 +71,15 @@
     </dependency>
 
     <dependency>
+
       <groupId>org.awaitility</groupId>
       <artifactId>awaitility</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.ranger</groupId>
+      <artifactId>ranger-plugin-classloader</artifactId>
+      <version>1.2.0</version>
     </dependency>
   </dependencies>
 

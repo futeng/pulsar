@@ -139,12 +139,39 @@ public class PulsarAuthorizationProvider implements AuthorizationProvider {
                             }
                         }
                     }
+<<<<<<< HEAD
                     return checkAuthorization(topicName, role, AuthAction.consume);
                 }).exceptionally(ex -> {
                     log.warn("Client with Role - {} failed to get permissions for topic - {}. {}", role, topicName,
                             ex.getMessage());
                     return null;
                 });
+=======
+                }
+                // check namespace and topic level consume-permissions
+                checkAuthorization(topicName, role, AuthAction.consume)
+                        .thenAccept(permissionFuture::complete)
+                        .exceptionally(ex -> {
+                            log.warn(
+                                    "Client with Role - {} failed to get permissions for topic - {}. {}",
+                                    role, topicName,
+                                    ex.getMessage());
+                            permissionFuture.completeExceptionally(ex);
+                            return null;
+                        });
+            }).exceptionally(ex -> {
+                log.warn("Client with Role - {} failed to get permissions for topic - {}. {}", role, topicName,
+                        ex.getMessage());
+                permissionFuture.completeExceptionally(ex);
+                return null;
+            });
+        } catch (Exception e) {
+            log.warn("Client  with Role - {} failed to get permissions for topic - {}. {}", role, topicName,
+                    e.getMessage());
+            permissionFuture.completeExceptionally(e);
+        }
+        return permissionFuture;
+>>>>>>> 5a236385f4a28d3a89fda8a18c998616e2fbc811
     }
 
     /**

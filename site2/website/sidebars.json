@@ -7,6 +7,10 @@
     {
       "type": "category",
       "label": "Get Started",
+      "link": {
+        "type": "doc",
+        "id": "getting-started-home"
+      },
       "items": [
         "getting-started-standalone",
         "getting-started-docker",
@@ -22,6 +26,7 @@
         "concepts-architecture-overview",
         "concepts-clients",
         "concepts-replication",
+        "concepts-cluster-level-failover",
         "concepts-multi-tenancy",
         "concepts-authentication",
         "concepts-topic-compaction",
@@ -194,7 +199,13 @@
     {
       "type": "category",
       "label": "Transactions",
-      "items": ["txn-why", "txn-what", "txn-how", "txn-use", "txn-monitor"]
+      "items": [
+        "txn-why",
+        "txn-what",
+        "txn-how",
+        "txn-use",
+        "txn-monitor"
+      ]
     },
     {
       "type": "category",
@@ -225,13 +236,26 @@
       "label": "Administration",
       "items": [
         "administration-zk-bk",
+        "administration-metadata-store",
         "administration-geo",
         "administration-pulsar-manager",
+        "administration-pulsar-shell",
         "administration-stats",
         "administration-load-balance",
         "administration-proxy",
         "administration-upgrade",
-        "administration-isolation"
+        {
+          "type": "category",
+          "label": "Pulsar isolation",
+          "link": {
+            "type": "doc",
+            "id": "administration-isolation"
+          },
+          "items": [
+            "administration-isolation-broker",
+            "administration-isolation-bookie"
+          ]
+        }
       ]
     },
     {
@@ -257,7 +281,9 @@
     {
       "type": "category",
       "label": "Performance",
-      "items": ["performance-pulsar-perf"]
+      "items": [
+        "performance-pulsar-perf"
+      ]
     },
     {
       "type": "category",
@@ -286,13 +312,18 @@
         "admin-api-permissions",
         "admin-api-topics",
         "admin-api-functions",
-        "admin-api-packages"
+        "admin-api-packages",
+        "admin-api-transactions"
       ]
     },
     {
       "type": "category",
       "label": "Adaptors",
-      "items": ["adaptors-kafka", "adaptors-spark", "adaptors-storm"]
+      "items": [
+        "adaptors-kafka",
+        "adaptors-spark",
+        "adaptors-storm"
+      ]
     },
     {
       "type": "category",
@@ -325,7 +356,12 @@
         "reference-cli-tools",
         "reference-configuration",
         "reference-metrics",
-        "reference-rest-api-overview"
+        "reference-rest-api-overview",
+        {
+          "type": "link",
+          "href": "/release-notes/",
+          "label": "Release notes"
+        }
       ]
     }
   ]

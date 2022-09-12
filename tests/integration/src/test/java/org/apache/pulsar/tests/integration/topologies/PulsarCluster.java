@@ -84,7 +84,7 @@ public class PulsarCluster {
     @Getter
     private final String clusterName;
     private final Network network;
-    private final ZKContainer zkContainer;
+    private final ZKContainer<?> zkContainer;
     private final CSContainer csContainer;
     private final boolean sharedCsContainer;
     private final Map<String, BKContainer> bookieContainers;
@@ -185,6 +185,9 @@ public class PulsarCluster {
                     }
                     if (spec.brokerMountFiles != null) {
                         spec.brokerMountFiles.forEach(brokerContainer::withFileSystemBind);
+                    }
+                    if (spec.brokerAdditionalPorts() != null) {
+                        spec.brokerAdditionalPorts().forEach(brokerContainer::addExposedPort);
                     }
                     return brokerContainer;
                 }
@@ -435,7 +438,7 @@ public class PulsarCluster {
                 .withEnv("pulsar.web-service-url", "http://pulsar-broker-0:8080")
                 .withEnv("SQL_PREFIX_pulsar.max-message-size", "" + spec.maxMessageSize)
                 .withClasspathResourceMapping(
-                        resourcePath, "/pulsar/conf/presto/config.properties", BindMode.READ_WRITE);
+                        resourcePath, "/pulsar/trino/conf/config.properties", BindMode.READ_WRITE);
         if (spec.queryLastMessage) {
             container.withEnv("pulsar.bookkeeper-use-v2-protocol", "false")
                     .withEnv("pulsar.bookkeeper-explicit-interval", "10");

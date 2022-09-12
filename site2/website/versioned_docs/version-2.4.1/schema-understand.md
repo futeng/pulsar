@@ -29,10 +29,10 @@ This is the `SchemaInfo` of a string.
 ```text
 
 {
-    “name”: “test-string-schema”,
-    “type”: “STRING”,
-    “schema”: “”,
-    “properties”: {}
+    "name": "test-string-schema",
+    "type": "STRING",
+    "schema": "",
+    "properties": {}
 }
 
 ```
@@ -179,7 +179,7 @@ This example shows how to construct a key/value schema and then use it to produc
        .create();
 
    final int key = 100;
-   final String value = "value-100”;
+   final String value = "value-100";
 
    // send the key/value message
    producer.newMessage()
@@ -411,7 +411,7 @@ This diagram illustrates how does schema work on the Producer side.
 
    The schema instance defines the schema for the data being produced using the producer instance. 
 
-   Take AVRO as an example, Pulsar extract schema definition from the POJO class and construct the `SchemaInfo` that the producer needs to pass to a broker when it connects.
+   Take AVRO as an example, Pulsar extracts schema definition from the POJO class and constructs the `SchemaInfo` that the producer needs to pass to a broker when it connects.
 
 2. The producer connects to the broker with the `SchemaInfo` extracted from the passed-in schema instance.
    

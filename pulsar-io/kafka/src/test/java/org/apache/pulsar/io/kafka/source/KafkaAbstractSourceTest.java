@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,11 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.pulsar.io.kafka.source;
 
-
 import com.google.common.collect.ImmutableMap;
+import java.time.Duration;
+import java.util.Collections;
+import java.lang.reflect.Field;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.security.auth.SecurityProtocol;
@@ -28,6 +30,7 @@ import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.io.core.SourceContext;
 import org.apache.pulsar.io.kafka.KafkaAbstractSource;
 import org.apache.pulsar.io.kafka.KafkaSourceConfig;
+import org.mockito.Mockito;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
@@ -52,18 +55,17 @@ public class KafkaAbstractSourceTest {
     private static class DummySource extends KafkaAbstractSource<String> {
 
         @Override
-        public KafkaRecord buildRecord(ConsumerRecord<Object, Object> consumerRecord) {
-            KafkaRecord record = new KafkaRecord(consumerRecord,
+        public KafkaRecord<String> buildRecord(ConsumerRecord<Object, Object> consumerRecord) {
+            return new KafkaRecord<>(consumerRecord,
                     new String((byte[]) consumerRecord.value(), StandardCharsets.UTF_8),
-                    Schema.STRING);
-            return record;
+                    Schema.STRING,
+                    Collections.emptyMap());
         }
-
     }
 
     @Test
     public void testInvalidConfigWillThrownException() throws Exception {
-        KafkaAbstractSource source = new DummySource();
+        KafkaAbstractSource<String> source = new DummySource();
         SourceContext ctx = mock(SourceContext.class);
         Map<String, Object> config = new HashMap<>();
         Assert.ThrowingRunnable openAndClose = ()->{
@@ -106,17 +108,37 @@ public class KafkaAbstractSourceTest {
     public void loadConsumerConfigPropertiesFromMapTest() throws Exception {
         Map<String, Object> config = new HashMap<>();
         config.put("consumerConfigProperties", "");
-        KafkaSourceConfig kafkaSourceConfig = KafkaSourceConfig.load(config);
+        config.put("bootstrapServers", "localhost:8080");
+        config.put("groupId", "test-group");
+        config.put("topic", "test-topic");
+        SourceContext sourceContext = Mockito.mock(SourceContext.class);
+        KafkaSourceConfig kafkaSourceConfig = KafkaSourceConfig.load(config, sourceContext);
         assertNotNull(kafkaSourceConfig);
         assertNull(kafkaSourceConfig.getConsumerConfigProperties());
 
         config.put("consumerConfigProperties", null);
-        kafkaSourceConfig = KafkaSourceConfig.load(config);
+        kafkaSourceConfig = KafkaSourceConfig.load(config, sourceContext);
         assertNull(kafkaSourceConfig.getConsumerConfigProperties());
 
         config.put("consumerConfigProperties", ImmutableMap.of("foo", "bar"));
-        kafkaSourceConfig = KafkaSourceConfig.load(config);
+        kafkaSourceConfig = KafkaSourceConfig.load(config, sourceContext);
         assertEquals(kafkaSourceConfig.getConsumerConfigProperties(), ImmutableMap.of("foo", "bar"));
+    }
+
+    @Test
+    public void loadSensitiveFieldsFromSecretTest() throws Exception {
+        Map<String, Object> config = new HashMap<>();
+        config.put("consumerConfigProperties", "");
+        config.put("bootstrapServers", "localhost:8080");
+        config.put("groupId", "test-group");
+        config.put("topic", "test-topic");
+        SourceContext sourceContext = Mockito.mock(SourceContext.class);
+        Mockito.when(sourceContext.getSecret("sslTruststorePassword"))
+                .thenReturn("xxxx");
+        KafkaSourceConfig kafkaSourceConfig = KafkaSourceConfig.load(config, sourceContext);
+        assertNotNull(kafkaSourceConfig);
+        assertNull(kafkaSourceConfig.getConsumerConfigProperties());
+        assertEquals("xxxx", kafkaSourceConfig.getSslTruststorePassword());
     }
 
     @Test
@@ -151,6 +173,49 @@ public class KafkaAbstractSourceTest {
         assertEquals(config.getSslEndpointIdentificationAlgorithm(), "");
         assertEquals(config.getSslTruststoreLocation(), "/etc/cert.pem");
         assertEquals(config.getSslTruststorePassword(), "cert_pwd");
+    }
+
+    @Test(expectedExceptions = RuntimeException.class, expectedExceptionsMessageRegExp = "Subscribe exception")
+    public final void throwExceptionBySubscribe() throws Exception {
+        KafkaAbstractSource<String> source = new DummySource();
+
+        KafkaSourceConfig kafkaSourceConfig = new KafkaSourceConfig();
+        kafkaSourceConfig.setTopic("test-topic");
+        Field kafkaSourceConfigField = KafkaAbstractSource.class.getDeclaredField("kafkaSourceConfig");
+        kafkaSourceConfigField.setAccessible(true);
+        kafkaSourceConfigField.set(source, kafkaSourceConfig);
+
+        Consumer<Object, Object> consumer = mock(Consumer.class);
+        Mockito.doThrow(new RuntimeException("Subscribe exception")).when(consumer)
+                .subscribe(Mockito.anyCollection());
+
+        Field consumerField = KafkaAbstractSource.class.getDeclaredField("consumer");
+        consumerField.setAccessible(true);
+        consumerField.set(source, consumer);
+        // will throw RuntimeException.
+        source.start();
+    }
+
+    @Test(expectedExceptions = RuntimeException.class, expectedExceptionsMessageRegExp = "Pool exception")
+    public final void throwExceptionByPoll() throws Exception {
+        KafkaAbstractSource<String> source = new DummySource();
+
+        KafkaSourceConfig kafkaSourceConfig = new KafkaSourceConfig();
+        kafkaSourceConfig.setTopic("test-topic");
+        Field kafkaSourceConfigField = KafkaAbstractSource.class.getDeclaredField("kafkaSourceConfig");
+        kafkaSourceConfigField.setAccessible(true);
+        kafkaSourceConfigField.set(source, kafkaSourceConfig);
+
+        Consumer<Object, Object> consumer = mock(Consumer.class);
+        Mockito.doThrow(new RuntimeException("Pool exception")).when(consumer)
+                .poll(Mockito.any(Duration.class));
+
+        Field consumerField = KafkaAbstractSource.class.getDeclaredField("consumer");
+        consumerField.setAccessible(true);
+        consumerField.set(source, consumer);
+        source.start();
+        // will throw RuntimeException.
+        source.read();
     }
 
     private File getFile(String name) {

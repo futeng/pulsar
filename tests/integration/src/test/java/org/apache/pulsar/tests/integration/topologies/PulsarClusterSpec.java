@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -82,14 +82,6 @@ public class PulsarClusterSpec {
     int numFunctionWorkers = 0;
 
     /**
-     * Enable a Presto Worker Node
-     *
-     * @return the flag whether presto worker is enabled
-     */
-    @Default
-    boolean enablePrestoWorker = false;
-
-    /**
      * Allow to query the last message
      */
     @Default
@@ -111,6 +103,12 @@ public class PulsarClusterSpec {
      */
     @Singular
     Map<String, GenericContainer<?>> externalServices;
+
+    /**
+     * Specify envs for external services.
+     */
+    @Singular
+    Map<String, Map<String, String>> externalServiceEnvs;
 
     /**
      * Returns the flag whether to enable/disable container log.
@@ -145,6 +143,11 @@ public class PulsarClusterSpec {
     Map<String, String> brokerEnvs;
 
     /**
+     * Specify envs for bookkeeper.
+     */
+    Map<String, String> bookkeeperEnvs;
+
+    /**
      * Specify mount files.
      */
     Map<String, String> proxyMountFiles;
@@ -161,4 +164,15 @@ public class PulsarClusterSpec {
      * Additional ports to expose on broker containers.
      */
     List<Integer> brokerAdditionalPorts;
+
+    /**
+     * Additional ports to expose on bookie containers.
+     */
+    List<Integer> bookieAdditionalPorts;
+
+    /**
+     * Enable TLS for connection.
+     */
+    @Default
+    boolean enableTls = false;
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -25,6 +25,9 @@ import java.util.Optional;
 import org.apache.bookkeeper.mledger.util.StatsBuckets;
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.pulsar.broker.service.Consumer;
+import org.apache.pulsar.broker.stats.prometheus.metrics.PrometheusLabels;
+import org.apache.pulsar.common.policies.data.BacklogQuota.BacklogQuotaType;
+import org.apache.pulsar.common.policies.data.stats.TopicMetricBean;
 import org.apache.pulsar.compaction.CompactionRecord;
 import org.apache.pulsar.compaction.CompactorMXBean;
 
@@ -51,6 +54,7 @@ class TopicStats {
 
     long backlogQuotaLimit;
     long backlogQuotaLimitTime;
+    long backlogAgeSeconds;
 
     ManagedLedgerStats managedLedgerStats = new ManagedLedgerStats();
 
@@ -68,8 +72,15 @@ class TopicStats {
     long compactionCompactedEntriesCount;
     long compactionCompactedEntriesSize;
     StatsBuckets compactionLatencyBuckets = new StatsBuckets(CompactionRecord.WRITE_LATENCY_BUCKETS_USEC);
-    public int delayedTrackerMemoryUsage;
+    public long delayedMessageIndexSizeInBytes;
 
+    Map<String, TopicMetricBean> bucketDelayedIndexStats = new HashMap<>();
+
+    public long sizeBasedBacklogQuotaExceededEvictionCount;
+    public long timeBasedBacklogQuotaExceededEvictionCount;
+
+
+    @SuppressWarnings("DuplicatedCode")
     public void reset() {
         subscriptionsCount = 0;
         producersCount = 0;
@@ -106,9 +117,15 @@ class TopicStats {
         compactionCompactedEntriesCount = 0;
         compactionCompactedEntriesSize = 0;
         compactionLatencyBuckets.reset();
-        delayedTrackerMemoryUsage = 0;
+        delayedMessageIndexSizeInBytes = 0;
+        bucketDelayedIndexStats.clear();
+
+        timeBasedBacklogQuotaExceededEvictionCount = 0;
+        sizeBasedBacklogQuotaExceededEvictionCount = 0;
+        backlogAgeSeconds = -1;
     }
 
+    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     public static void printTopicStats(PrometheusMetricStreams stream, TopicStats stats,
                                        Optional<CompactorMXBean> compactorMXBean, String cluster, String namespace,
                                        String topic, boolean splitTopicAndPartitionIndexLabel) {
@@ -148,6 +165,9 @@ class TopicStats {
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
         writeMetric(stream, "pulsar_storage_read_rate", stats.managedLedgerStats.storageReadRate,
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
+        writeMetric(stream, "pulsar_storage_read_cache_misses_rate",
+                stats.managedLedgerStats.storageReadCacheMissesRate,
+                cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
         writeMetric(stream, "pulsar_storage_backlog_size", stats.managedLedgerStats.backlogSize,
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
         writeMetric(stream, "pulsar_publish_rate_limit_times", stats.publishRateLimitedTimes,
@@ -158,9 +178,22 @@ class TopicStats {
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
         writeMetric(stream, "pulsar_storage_backlog_quota_limit_time", stats.backlogQuotaLimitTime,
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
-
-        writeMetric(stream, "pulsar_delayed_message_index_size_bytes", stats.delayedTrackerMemoryUsage,
+        writeMetric(stream, "pulsar_storage_backlog_age_seconds", stats.backlogAgeSeconds,
                 cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
+        writeBacklogQuotaMetric(stream, "pulsar_storage_backlog_quota_exceeded_evictions_total",
+                stats.sizeBasedBacklogQuotaExceededEvictionCount, cluster, namespace, topic,
+                splitTopicAndPartitionIndexLabel, BacklogQuotaType.destination_storage);
+        writeBacklogQuotaMetric(stream, "pulsar_storage_backlog_quota_exceeded_evictions_total",
+                stats.timeBasedBacklogQuotaExceededEvictionCount, cluster, namespace, topic,
+                splitTopicAndPartitionIndexLabel, BacklogQuotaType.message_age);
+
+        writeMetric(stream, "pulsar_delayed_message_index_size_bytes", stats.delayedMessageIndexSizeInBytes,
+                cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
+
+        for (TopicMetricBean topicMetricBean : stats.bucketDelayedIndexStats.values()) {
+            writeTopicMetric(stream, topicMetricBean.name, topicMetricBean.value, cluster, namespace,
+                    topic, splitTopicAndPartitionIndexLabel, topicMetricBean.labelsAndValues);
+        }
 
         long[] latencyBuckets = stats.managedLedgerStats.storageWriteLatencyBuckets.getBuckets();
         writeMetric(stream, "pulsar_storage_write_latency_le_0_5",
@@ -306,6 +339,16 @@ class TopicStats {
             writeSubscriptionMetric(stream, "pulsar_subscription_filter_rescheduled_msg_count",
                     subsStats.filterRescheduledMsgCount, cluster, namespace, topic, sub,
                     splitTopicAndPartitionIndexLabel);
+            writeSubscriptionMetric(stream, "pulsar_delayed_message_index_size_bytes",
+                    subsStats.delayedMessageIndexSizeInBytes, cluster, namespace, topic, sub,
+                    splitTopicAndPartitionIndexLabel);
+
+            final String[] subscriptionLabel = {"subscription", sub};
+            for (TopicMetricBean topicMetricBean : subsStats.bucketDelayedIndexStats.values()) {
+                String[] labelsAndValues = ArrayUtils.addAll(subscriptionLabel, topicMetricBean.labelsAndValues);
+                writeTopicMetric(stream, topicMetricBean.name, topicMetricBean.value, cluster, namespace,
+                        topic, splitTopicAndPartitionIndexLabel, labelsAndValues);
+            }
 
             subsStats.consumerStat.forEach((c, consumerStats) -> {
                 writeConsumerMetric(stream, "pulsar_consumer_msg_rate_redeliver", consumerStats.msgRateRedeliver,
@@ -406,12 +449,29 @@ class TopicStats {
             writeMetric(stream, "pulsar_compaction_latency_count",
                     stats.compactionLatencyBuckets.getCount(), cluster, namespace, topic,
                     splitTopicAndPartitionIndexLabel);
+
+            for (TopicMetricBean topicMetricBean : stats.bucketDelayedIndexStats.values()) {
+                String[] labelsAndValues = topicMetricBean.labelsAndValues;
+                writeTopicMetric(stream, topicMetricBean.name, topicMetricBean.value, cluster, namespace,
+                        topic, splitTopicAndPartitionIndexLabel, labelsAndValues);
+            }
         }
     }
 
     private static void writeMetric(PrometheusMetricStreams stream, String metricName, Number value, String cluster,
                                     String namespace, String topic, boolean splitTopicAndPartitionIndexLabel) {
         writeTopicMetric(stream, metricName, value, cluster, namespace, topic, splitTopicAndPartitionIndexLabel);
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private static void writeBacklogQuotaMetric(PrometheusMetricStreams stream, String metricName, Number value,
+                                                String cluster, String namespace, String topic,
+                                                boolean splitTopicAndPartitionIndexLabel,
+                                                BacklogQuotaType backlogQuotaType) {
+
+        String quotaTypeLabelValue = PrometheusLabels.backlogQuotaTypeLabel(backlogQuotaType);
+        writeTopicMetric(stream, metricName, value, cluster, namespace, topic, splitTopicAndPartitionIndexLabel,
+                "quota_type", quotaTypeLabelValue);
     }
 
     private static void writeMetric(PrometheusMetricStreams stream, String metricName, Number value, String cluster,

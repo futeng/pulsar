@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,11 +23,11 @@ import com.beust.jcommander.Parameter;
 import org.apache.pulsar.broker.resources.PulsarResources;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.naming.SystemTopicNames;
-import org.apache.pulsar.common.util.CmdGenerateDocs;
+import org.apache.pulsar.docs.tools.CmdGenerateDocs;
 import org.apache.pulsar.metadata.api.extended.MetadataStoreExtended;
 
 /**
- * Setup the transaction coordinator metadata for a cluster, the setup will create pulsar/system namespace and create
+ * Set up the transaction coordinator metadata for a cluster, the setup will create pulsar/system namespace and create
  * partitioned topic for transaction coordinator assign.
  */
 public class PulsarTransactionCoordinatorMetadataSetup {
@@ -91,7 +91,7 @@ public class PulsarTransactionCoordinatorMetadataSetup {
         }
 
         try (MetadataStoreExtended configStore = PulsarClusterMetadataSetup
-                .initMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
+                .initConfigMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
             PulsarResources pulsarResources = new PulsarResources(null, configStore);
             // Create system tenant
             PulsarClusterMetadataSetup

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -53,7 +53,6 @@ public class OffloaderUtils {
             throws IOException {
         // need to load offloader NAR to the classloader that also loaded LedgerOffloaderFactory in case
         // LedgerOffloaderFactory is loaded by a classloader that is not the default classloader
-        // as is the case for the pulsar presto plugin
         NarClassLoader ncl = NarClassLoaderBuilder.builder()
                 .narFile(new File(narPath))
                 .parentClassLoader(LedgerOffloaderFactory.class.getClassLoader())
@@ -61,7 +60,7 @@ public class OffloaderUtils {
                 .build();
         String configStr = ncl.getServiceDefinition(PULSAR_OFFLOADER_SERVICE_NAME);
 
-        OffloaderDefinition conf = ObjectMapperFactory.getThreadLocalYaml()
+        OffloaderDefinition conf = ObjectMapperFactory.getYamlMapper().getObjectMapper()
             .readValue(configStr, OffloaderDefinition.class);
         if (StringUtils.isEmpty(conf.getOffloaderFactoryClass())) {
             throw new IOException(
@@ -120,7 +119,7 @@ public class OffloaderUtils {
                 .build()) {
             String configStr = ncl.getServiceDefinition(PULSAR_OFFLOADER_SERVICE_NAME);
 
-            return ObjectMapperFactory.getThreadLocalYaml().readValue(configStr, OffloaderDefinition.class);
+            return ObjectMapperFactory.getYamlMapper().reader().readValue(configStr, OffloaderDefinition.class);
         }
     }
 

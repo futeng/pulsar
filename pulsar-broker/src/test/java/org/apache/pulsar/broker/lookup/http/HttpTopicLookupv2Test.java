@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -78,7 +78,7 @@ public class HttpTopicLookupv2Test {
         pulsar = mock(PulsarService.class);
         ns = mock(NamespaceService.class);
         auth = mock(AuthorizationService.class);
-        config = spy(ServiceConfiguration.class);
+        config = new ServiceConfiguration();
         config.setClusterName("use");
         clusters = new TreeSet<>();
         clusters.add("use");
@@ -104,6 +104,8 @@ public class HttpTopicLookupv2Test {
         doReturn(brokerService).when(pulsar).getBrokerService();
         doReturn(auth).when(brokerService).getAuthorizationService();
         doReturn(new Semaphore(1000)).when(brokerService).getLookupRequestSemaphore();
+        doReturn(CompletableFuture.completedFuture(false)).when(brokerService)
+                .isAllowAutoTopicCreationAsync(any(TopicName.class));
     }
 
     @Test
@@ -119,7 +121,7 @@ public class HttpTopicLookupv2Test {
         uriField.set(destLookup, uriInfo);
         URI uri = URI.create("http://localhost:8080/lookup/v2/destination/topic/myprop/usc/ns2/topic1");
         doReturn(uri).when(uriInfo).getRequestUri();
-        doReturn(true).when(config).isAuthorizationEnabled();
+        config.setAuthorizationEnabled(true);
 
         AsyncResponse asyncResponse = mock(AsyncResponse.class);
         destLookup.lookupTopicAsync(asyncResponse, TopicDomain.persistent.value(), "myprop", "usc", "ns2", "topic1", false, null, null);
@@ -144,7 +146,7 @@ public class HttpTopicLookupv2Test {
         uriField.set(destLookup, uriInfo);
         URI uri = URI.create("http://localhost:8080/lookup/v2/destination/topic/myprop/usc/ns2/topic1");
         doReturn(uri).when(uriInfo).getRequestUri();
-        doReturn(true).when(config).isAuthorizationEnabled();
+        config.setAuthorizationEnabled(true);
 
         NamespaceService namespaceService = pulsar.getNamespaceService();
         CompletableFuture<Boolean> future = new CompletableFuture<>();
@@ -171,7 +173,7 @@ public class HttpTopicLookupv2Test {
             return CompletableFuture.completedFuture(null);
         }
     }
-    
+
     @Test
     public void testNotEnoughLookupPermits() throws Exception {
 
@@ -188,7 +190,7 @@ public class HttpTopicLookupv2Test {
         uriField.set(destLookup, uriInfo);
         URI uri = URI.create("http://localhost:8080/lookup/v2/destination/topic/myprop/usc/ns2/topic1");
         doReturn(uri).when(uriInfo).getRequestUri();
-        doReturn(true).when(config).isAuthorizationEnabled();
+        config.setAuthorizationEnabled(true);
 
         AsyncResponse asyncResponse1 = mock(AsyncResponse.class);
         destLookup.lookupTopicAsync(asyncResponse1, TopicDomain.persistent.value(), "myprop", "usc", "ns2", "topic1", false,null, null);
@@ -218,7 +220,7 @@ public class HttpTopicLookupv2Test {
         uriField.setAccessible(true);
         UriInfo uriInfo = mock(UriInfo.class);
         uriField.set(destLookup, uriInfo);
-        doReturn(false).when(config).isAuthorizationEnabled();
+        config.setAuthorizationEnabled(false);
         AsyncResponse asyncResponse = mock(AsyncResponse.class);
         ArgumentCaptor<RestException> arg = ArgumentCaptor.forClass(RestException.class);
 //        // Test policy not found
@@ -274,6 +276,38 @@ public class HttpTopicLookupv2Test {
         assertEquals(data1.getBrokerUrl(), url);
         RedirectData data2 = new RedirectData(url);
         assertEquals(data2.getRedirectLookupAddress(), url);
+    }
+
+    @Test
+    public void topicNotFound() throws Exception {
+        MockTopicLookup destLookup = spy(MockTopicLookup.class);
+        doReturn(false).when(destLookup).isRequestHttps();
+        BrokerService brokerService = pulsar.getBrokerService();
+        doReturn(new Semaphore(1000,true)).when(brokerService).getLookupRequestSemaphore();
+        destLookup.setPulsar(pulsar);
+        doReturn("null").when(destLookup).clientAppId();
+        Field uriField = PulsarWebResource.class.getDeclaredField("uri");
+        uriField.setAccessible(true);
+        UriInfo uriInfo = mock(UriInfo.class);
+        uriField.set(destLookup, uriInfo);
+        URI uri = URI.create("http://localhost:8080/lookup/v2/destination/topic/myprop/usc/ns2/topic1");
+        doReturn(uri).when(uriInfo).getRequestUri();
+        config.setAuthorizationEnabled(true);
+        NamespaceService namespaceService = pulsar.getNamespaceService();
+        CompletableFuture<Boolean> future = new CompletableFuture<>();
+        future.complete(false);
+        doReturn(future).when(namespaceService).checkTopicExists(any(TopicName.class));
+
+        // Get the current semaphore first
+        Integer state1 = pulsar.getBrokerService().getLookupRequestSemaphore().availablePermits();
+        AsyncResponse asyncResponse1 = mock(AsyncResponse.class);
+        // We used a nonexistent topic to test
+        destLookup.lookupTopicAsync(asyncResponse1, TopicDomain.persistent.value(), "myprop", "usc", "ns2", "topic2", false, null, null);
+        // Gets semaphore status
+        Integer state2 = pulsar.getBrokerService().getLookupRequestSemaphore().availablePermits();
+        // If it is successfully released, it should be equal
+        assertEquals(state1, state2);
+
     }
 
 }

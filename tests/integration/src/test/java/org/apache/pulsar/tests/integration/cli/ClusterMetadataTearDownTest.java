@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -69,7 +69,6 @@ public class ClusterMetadataTearDownTest extends TestRetrySupport {
             .clusterName("ClusterMetadataTearDownTest-" + UUID.randomUUID().toString().substring(0, 8))
             .numProxies(0)
             .numFunctionWorkers(0)
-            .enablePrestoWorker(false)
             .build();
 
     private PulsarCluster pulsarCluster;

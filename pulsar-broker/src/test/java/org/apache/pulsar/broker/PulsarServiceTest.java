@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -28,6 +28,7 @@ import java.util.Optional;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pulsar.broker.auth.MockedPulsarServiceBaseTest;
+import org.apache.pulsar.client.admin.PulsarAdminException;
 import org.apache.pulsar.functions.worker.WorkerConfig;
 import org.apache.pulsar.functions.worker.WorkerService;
 import org.testng.annotations.AfterMethod;
@@ -48,12 +49,13 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
     protected void cleanup() throws Exception {
         super.internalCleanup();
         useStaticPorts = false;
-        resetConfig();
     }
 
     @Override
     protected void doInitConf() throws Exception {
         super.doInitConf();
+        conf.setBrokerServicePortTls(Optional.of(0));
+        conf.setWebServicePortTls(Optional.of(0));
         if (useStaticPorts) {
             conf.setBrokerServicePortTls(Optional.of(6651));
             conf.setBrokerServicePort(Optional.of(6660));
@@ -85,26 +87,65 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
      */
     @Test
     public void testGetWorkerServiceException() throws Exception {
-        ServiceConfiguration configuration = new ServiceConfiguration();
-        configuration.setMetadataStoreUrl("zk:localhost");
-        configuration.setClusterName("clusterName");
-        configuration.setFunctionsWorkerEnabled(false);
-        configuration.setBrokerShutdownTimeoutMs(0L);
-        configuration.setLoadBalancerOverrideBrokerNicSpeedGbps(Optional.of(1.0d));
-        @Cleanup
-        PulsarService pulsarService = new PulsarService(configuration, new WorkerConfig(),
-                Optional.empty(), (exitCode) -> {});
+        conf.setFunctionsWorkerEnabled(false);
+        setup();
 
         String errorMessage = "Pulsar Function Worker is not enabled, probably functionsWorkerEnabled is set to false";
+
+        int thrownCnt = 0;
         try {
-            pulsarService.getWorkerService();
+            pulsar.getWorkerService();
         } catch (UnsupportedOperationException e) {
+            thrownCnt++;
             assertEquals(e.getMessage(), errorMessage);
         }
+
+        try {
+            admin.sources().listSources("my", "test");
+        } catch (PulsarAdminException e) {
+            thrownCnt++;
+            assertEquals(e.getStatusCode(), 409);
+            assertEquals(e.getMessage(), errorMessage);
+        }
+
+        try {
+            admin.sinks().getSinkStatus("my", "test", "test");
+        } catch (PulsarAdminException e) {
+            thrownCnt++;
+            assertEquals(e.getStatusCode(), 409);
+            assertEquals(e.getMessage(), errorMessage);
+        }
+
+        try {
+            admin.functions().getFunction("my", "test", "test");
+        } catch (PulsarAdminException e) {
+            thrownCnt++;
+            assertEquals(e.getStatusCode(), 409);
+            assertEquals(e.getMessage(), errorMessage);
+        }
+
+        try {
+            admin.worker().getClusterLeader();
+        } catch (PulsarAdminException e) {
+            thrownCnt++;
+            assertEquals(e.getStatusCode(), 409);
+            assertEquals(e.getMessage(), errorMessage);
+        }
+
+        try {
+            admin.worker().getFunctionsStats();
+        } catch (PulsarAdminException e) {
+            thrownCnt++;
+            assertEquals(e.getStatusCode(), 409);
+            assertEquals(e.getMessage(), errorMessage);
+        }
+
+        assertEquals(thrownCnt, 6);
     }
 
     @Test
     public void testAdvertisedAddress() throws Exception {
+        cleanup();
         useStaticPorts = true;
         setup();
         assertEquals(pulsar.getAdvertisedAddress(), "localhost");
@@ -117,6 +158,7 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
 
     @Test
     public void testAdvertisedListeners() throws Exception {
+        cleanup();
         // don't use dynamic ports when using advertised listeners (#12079)
         useStaticPorts = true;
         conf.setAdvertisedListeners("internal:pulsar://gateway:6650, internal:pulsar+ssl://gateway:6651");
@@ -132,6 +174,7 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
 
     @Test
     public void testDynamicBrokerPort() throws Exception {
+        cleanup();
         useStaticPorts = false;
         setup();
         assertEquals(pulsar.getAdvertisedAddress(), "localhost");
@@ -145,7 +188,7 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
     }
 
     @Test
-    public void testBacklogAndRetentionCheck() {
+    public void testBacklogAndRetentionCheck() throws PulsarServerException {
         ServiceConfiguration config = new ServiceConfiguration();
         config.setClusterName("test");
         config.setMetadataStoreUrl("memory:local");
@@ -157,6 +200,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertFalse(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
 
         // Only set retention
@@ -169,6 +214,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertFalse(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
 
         // Set both retention and backlog quota
@@ -181,6 +228,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertFalse(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
 
         // Set invalidated retention and backlog quota
@@ -192,6 +241,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertTrue(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
 
         config.setBacklogQuotaDefaultLimitBytes(4 * 1024 * 1024);
@@ -203,6 +254,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertTrue(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
 
         // Only set backlog quota
@@ -215,6 +268,8 @@ public class PulsarServiceTest extends MockedPulsarServiceBaseTest {
             pulsarService.start();
         } catch (Exception e) {
             assertFalse(e.getCause() instanceof IllegalArgumentException);
+        } finally {
+            pulsarService.close();
         }
     }
 }

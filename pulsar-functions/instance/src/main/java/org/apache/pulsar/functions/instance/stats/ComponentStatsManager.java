@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -149,7 +149,7 @@ public abstract class ComponentStatsManager implements AutoCloseable {
     protected InstanceCommunication.FunctionStatus.ExceptionInformation getExceptionInfo(Throwable th, long ts) {
         InstanceCommunication.FunctionStatus.ExceptionInformation.Builder exceptionInfoBuilder =
                 InstanceCommunication.FunctionStatus.ExceptionInformation.newBuilder().setMsSinceEpoch(ts);
-        String msg = th.getMessage();
+        String msg = String.format("[%s]: %s", th.getClass().getName(), th.getMessage());
         if (msg != null) {
             exceptionInfoBuilder.setExceptionString(msg);
         }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,7 +20,7 @@ package org.apache.pulsar;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
-import org.apache.pulsar.common.util.CmdGenerateDocs;
+import org.apache.pulsar.docs.tools.CmdGenerateDocs;
 
 /**
  * Pulsar version entry point.
@@ -56,5 +56,9 @@ public class PulsarVersionStarter {
             return;
         }
         System.out.println("Current version of pulsar is: " + PulsarVersion.getVersion());
+        System.out.println("Git Revision " + PulsarVersion.getGitSha());
+        System.out.println("Git Branch " + PulsarVersion.getGitBranch());
+        System.out.println("Built by " + PulsarVersion.getBuildUser() + " on " + PulsarVersion.getBuildHost() + " at "
+                + PulsarVersion.getBuildTime());
     }
 }

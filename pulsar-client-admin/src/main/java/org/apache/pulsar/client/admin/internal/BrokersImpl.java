@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -75,15 +75,15 @@ public class BrokersImpl extends BaseResource implements Brokers {
     }
 
     @Override
-    public Map<String, NamespaceOwnershipStatus> getOwnedNamespaces(String cluster, String brokerUrl)
+    public Map<String, NamespaceOwnershipStatus> getOwnedNamespaces(String cluster, String brokerId)
             throws PulsarAdminException {
-        return sync(() -> getOwnedNamespacesAsync(cluster, brokerUrl));
+        return sync(() -> getOwnedNamespacesAsync(cluster, brokerId));
     }
 
     @Override
     public CompletableFuture<Map<String, NamespaceOwnershipStatus>> getOwnedNamespacesAsync(
-            String cluster, String brokerUrl) {
-        WebTarget path = adminBrokers.path(cluster).path(brokerUrl).path("ownedNamespaces");
+            String cluster, String brokerId) {
+        WebTarget path = adminBrokers.path(cluster).path(brokerId).path("ownedNamespaces");
         return asyncGetRequest(path, new FutureCallback<Map<String, NamespaceOwnershipStatus>>(){});
     }
 
@@ -162,19 +162,7 @@ public class BrokersImpl extends BaseResource implements Brokers {
     @Override
     public CompletableFuture<Void> backlogQuotaCheckAsync() {
         WebTarget path = adminBrokers.path("backlogQuotaCheck");
-        final CompletableFuture<Void> future = new CompletableFuture<>();
-        asyncGetRequest(path, new InvocationCallback<Void>() {
-            @Override
-            public void completed(Void unused) {
-                future.complete(null);
-            }
-
-            @Override
-            public void failed(Throwable throwable) {
-                future.completeExceptionally(throwable);
-            }
-        });
-        return future;
+        return asyncGetRequest(path, new FutureCallback<Void>() {});
     }
 
     @Override

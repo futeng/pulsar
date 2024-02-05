@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,7 +23,12 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import io.netty.buffer.ByteBufAllocator;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import lombok.Cleanup;
+import org.apache.pulsar.client.api.CompressionType;
+import org.apache.pulsar.client.api.MessageRoutingMode;
 import org.apache.pulsar.client.api.ProducerConsumerBase;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
@@ -34,9 +39,6 @@ import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
-
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
 
 @Test(groups = "broker-impl")
 public class ProducerMemoryLimitTest extends ProducerConsumerBase {
@@ -152,6 +154,14 @@ public class ProducerMemoryLimitTest extends ProducerConsumerBase {
             }).when(mockAllocator).buffer(anyInt());
 
             final BatchMessageContainerImpl batchMessageContainer = new BatchMessageContainerImpl(mockAllocator);
+            /* Without `batchMessageContainer.setProducer(producer);` it throws NPE since producer is null, and
+                eventually sendAsync() catches this NPE and releases the memory and semaphore.
+                } catch (Throwable t) {
+                    completeCallbackAndReleaseSemaphore(uncompressedSize, callback,
+                            new PulsarClientException(t, msg.getSequenceId()));
+                }
+            */
+            batchMessageContainer.setProducer(producer);
             Field batchMessageContainerField = ProducerImpl.class.getDeclaredField("batchMessageContainer");
             batchMessageContainerField.setAccessible(true);
             batchMessageContainerField.set(spyProducer, batchMessageContainer);
@@ -183,11 +193,44 @@ public class ProducerMemoryLimitTest extends ProducerConsumerBase {
         Assert.assertEquals(memoryLimitController.currentUsage(), 0);
     }
 
-    private void initClientWithMemoryLimit() throws PulsarClientException {
-        pulsarClient = PulsarClient.builder().
+    @Test(timeOut = 10_000)
+    public void testProducerBlockReserveMemory() throws Exception {
+        replacePulsarClient(PulsarClient.builder().
                 serviceUrl(lookupUrl.toString())
-                .memoryLimit(50, SizeUnit.KILO_BYTES)
-                .build();
+                .memoryLimit(1, SizeUnit.KILO_BYTES));
+        @Cleanup
+        ProducerImpl<byte[]> producer = (ProducerImpl<byte[]>) pulsarClient.newProducer()
+                .topic("testProducerMemoryLimit")
+                .sendTimeout(5, TimeUnit.SECONDS)
+                .compressionType(CompressionType.SNAPPY)
+                .messageRoutingMode(MessageRoutingMode.RoundRobinPartition)
+                .maxPendingMessages(0)
+                .blockIfQueueFull(true)
+                .enableBatching(true)
+                .batchingMaxMessages(100)
+                .batchingMaxBytes(65536)
+                .batchingMaxPublishDelay(100, TimeUnit.MILLISECONDS)
+                .create();
+        int msgCount = 5;
+        CountDownLatch cdl = new CountDownLatch(msgCount);
+        for (int i = 0; i < msgCount; i++) {
+            producer.sendAsync("memory-test".getBytes(StandardCharsets.UTF_8)).whenComplete(((messageId, throwable) -> {
+                cdl.countDown();
+            }));
+        }
+
+        cdl.await();
+
+        producer.close();
+        PulsarClientImpl clientImpl = (PulsarClientImpl) this.pulsarClient;
+        final MemoryLimitController memoryLimitController = clientImpl.getMemoryLimitController();
+        Assert.assertEquals(memoryLimitController.currentUsage(), 0);
+    }
+
+    private void initClientWithMemoryLimit() throws PulsarClientException {
+        replacePulsarClient(PulsarClient.builder().
+                serviceUrl(lookupUrl.toString())
+                .memoryLimit(50, SizeUnit.KILO_BYTES));
     }
 
 }

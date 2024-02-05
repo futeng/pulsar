@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,13 +19,13 @@
 package org.apache.pulsar.broker.stats;
 
 import static org.apache.pulsar.broker.BrokerTestUtil.spyWithClassAndConstructorArgs;
+import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsClient.Metric;
+import static org.apache.pulsar.broker.stats.prometheus.PrometheusMetricsClient.parseMetrics;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.testng.Assert.assertNotEquals;
 import static org.testng.AssertJUnit.assertEquals;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 import java.io.ByteArrayOutputStream;
@@ -44,9 +44,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.pulsar.broker.PulsarService;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pulsar.broker.ServiceConfiguration;
-import org.apache.pulsar.broker.service.BrokerService;
 import org.apache.pulsar.broker.service.Subscription;
 import org.apache.pulsar.broker.service.Topic;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
@@ -84,9 +83,18 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
     @BeforeMethod
     @Override
     protected void setup() throws Exception {
-        conf.setMaxUnackedMessagesPerConsumer(0);
         super.internalSetup();
         super.producerBaseSetup();
+    }
+
+    @Override
+    protected ServiceConfiguration getDefaultConf() {
+        ServiceConfiguration conf = super.getDefaultConf();
+        conf.setMaxUnackedMessagesPerConsumer(0);
+        // wait for shutdown of the broker, this prevents flakiness which could be caused by metrics being
+        // unregistered asynchronously. This impacts the execution of the next test method if this would be happening.
+        conf.setBrokerShutdownTimeoutMs(5000L);
+        return conf;
     }
 
     @AfterMethod(alwaysRun = true)
@@ -226,7 +234,9 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
                 "avgMessagesPerEntry",
                 "blockedConsumerOnUnackedMsgs",
                 "readPositionWhenJoining",
+                "lastAckedTime",
                 "lastAckedTimestamp",
+                "lastConsumedTime",
                 "lastConsumedTimestamp",
                 "lastConsumedFlowTimestamp",
                 "keyHashRanges",
@@ -328,11 +338,11 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
         PrometheusMetricsGenerator.generate(pulsar, exposeTopicLevelMetrics, true, true, output);
         String metricStr = output.toString(StandardCharsets.UTF_8);
 
-        Multimap<String, PrometheusMetricsTest.Metric> metricsMap = PrometheusMetricsTest.parseMetrics(metricStr);
-        Collection<PrometheusMetricsTest.Metric> ackRateMetric = metricsMap.get("pulsar_consumer_msg_ack_rate");
+        Multimap<String, Metric> metricsMap = parseMetrics(metricStr);
+        Collection<Metric> ackRateMetric = metricsMap.get("pulsar_consumer_msg_ack_rate");
 
         String rateOutMetricName = exposeTopicLevelMetrics ? "pulsar_consumer_msg_rate_out" : "pulsar_rate_out";
-        Collection<PrometheusMetricsTest.Metric> rateOutMetric = metricsMap.get(rateOutMetricName);
+        Collection<Metric> rateOutMetric = metricsMap.get(rateOutMetricName);
         Assert.assertTrue(ackRateMetric.size() > 0);
         Assert.assertTrue(rateOutMetric.size() > 0);
 
@@ -365,18 +375,9 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
         }
     }
 
-    @Override
-    protected PulsarService newPulsarService(ServiceConfiguration conf) throws Exception {
-        return new PulsarService(conf) {
-            @Override
-            protected BrokerService newBrokerService(PulsarService pulsar) throws Exception {
-                return spy(new BrokerService(this, ioEventLoopGroup));
-            }
-        };
-    }
-
     @Test
     public void testAvgMessagesPerEntry() throws Exception {
+        conf.setAllowOverrideEntryFilters(true);
         final String topic = "persistent://public/default/testFilterState";
         String subName = "sub";
 
@@ -409,7 +410,7 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
         EntryFilterWithClassLoader
                 loader = spyWithClassAndConstructorArgs(EntryFilterWithClassLoader.class, filter,
                 narClassLoader);
-        ImmutableMap<String, EntryFilterWithClassLoader> entryFilters = ImmutableMap.of("filter", loader);
+        Pair<String, List<EntryFilter>> entryFilters = Pair.of("filter", List.of(loader));
 
         PersistentTopic topicRef = (PersistentTopic) pulsar.getBrokerService()
                 .getTopicReference(topic).get();
@@ -447,4 +448,37 @@ public class ConsumerStatsTest extends ProducerConsumerBase {
         int avgMessagesPerEntry = consumerStats.getAvgMessagesPerEntry();
         assertEquals(3, avgMessagesPerEntry);
     }
+
+    @Test()
+    public void testNonPersistentTopicSharedSubscriptionUnackedMessages() throws Exception {
+        final String topicName = "non-persistent://my-property/my-ns/my-topic" + UUID.randomUUID();
+        final String subName = "my-sub";
+
+        @Cleanup
+        Producer<byte[]> producer = pulsarClient.newProducer()
+                .topic(topicName)
+                .create();
+        @Cleanup
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topic(topicName)
+                .subscriptionName(subName)
+                .subscriptionType(SubscriptionType.Shared)
+                .subscribe();
+
+        for (int i = 0; i < 5; i++) {
+            producer.send(("message-" + i).getBytes());
+        }
+        for (int i = 0; i < 5; i++) {
+            Message<byte[]> msg = consumer.receive(5, TimeUnit.SECONDS);
+            consumer.acknowledge(msg);
+        }
+        TimeUnit.SECONDS.sleep(1);
+
+        TopicStats topicStats = admin.topics().getStats(topicName);
+        assertEquals(1, topicStats.getSubscriptions().size());
+        List<? extends ConsumerStats> consumers = topicStats.getSubscriptions().get(subName).getConsumers();
+        assertEquals(1, consumers.size());
+        assertEquals(0, consumers.get(0).getUnackedMessages());
+    }
+
 }

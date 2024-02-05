@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -43,6 +43,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import lombok.Getter;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pulsar.broker.PulsarService;
@@ -54,7 +55,6 @@ import org.apache.pulsar.client.impl.Backoff;
 import org.apache.pulsar.common.policies.data.BundlesData;
 import org.apache.pulsar.common.policies.data.LocalPolicies;
 import org.apache.pulsar.common.policies.data.Policies;
-import org.apache.pulsar.metadata.api.MetadataCache;
 import org.apache.pulsar.metadata.api.Notification;
 import org.apache.pulsar.policies.data.loadbalancer.BundleData;
 import org.apache.pulsar.stats.CacheMetricsCollector;
@@ -69,7 +69,10 @@ public class NamespaceBundleFactory {
     private final AsyncLoadingCache<NamespaceName, NamespaceBundles> bundlesCache;
 
     private final PulsarService pulsar;
-    private final MetadataCache<Policies> policiesCache;
+
+    @Getter
+    private final TopicBundleAssignmentStrategy topicBundleAssignmentStrategy;
+
     private final Duration maxRetryDuration = Duration.ofSeconds(10);
 
     public NamespaceBundleFactory(PulsarService pulsar, HashFunction hashFunc) {
@@ -84,7 +87,8 @@ public class NamespaceBundleFactory {
         pulsar.getLocalMetadataStore().registerListener(this::handleMetadataStoreNotification);
 
         this.pulsar = pulsar;
-        this.policiesCache = pulsar.getConfigurationMetadataStore().getMetadataCache(Policies.class);
+
+        topicBundleAssignmentStrategy = TopicBundleAssignmentFactory.create(pulsar);
     }
 
     private CompletableFuture<NamespaceBundles> loadBundles(NamespaceName namespace, Executor executor) {
@@ -275,8 +279,7 @@ public class NamespaceBundleFactory {
         String[] boundaries = bundleRange.split("_");
         Long lowerEndpoint = Long.decode(boundaries[0]);
         Long upperEndpoint = Long.decode(boundaries[1]);
-        Range<Long> hashRange = Range.range(lowerEndpoint, BoundType.CLOSED, upperEndpoint,
-                (upperEndpoint.equals(NamespaceBundles.FULL_UPPER_BOUND)) ? BoundType.CLOSED : BoundType.OPEN);
+        Range<Long> hashRange = getRange(lowerEndpoint, upperEndpoint);
         return getBundle(NamespaceName.get(namespace), hashRange);
     }
 
@@ -415,6 +418,11 @@ public class NamespaceBundleFactory {
         i.next();
         // prop, cluster, namespace
         return Joiner.on("/").join(i);
+    }
+
+    public static Range<Long> getRange(Long lowerEndpoint, Long upperEndpoint) {
+        return Range.range(lowerEndpoint, BoundType.CLOSED, upperEndpoint,
+                (upperEndpoint.equals(NamespaceBundles.FULL_UPPER_BOUND)) ? BoundType.CLOSED : BoundType.OPEN);
     }
 
 }

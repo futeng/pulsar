@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -28,10 +28,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.bookkeeper.client.LedgerHandle;
 import org.apache.bookkeeper.mledger.ManagedLedger;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerMBeanImpl;
+import org.apache.commons.lang3.ArrayUtils;
 import org.apache.pulsar.broker.PulsarService;
 import org.apache.pulsar.broker.service.Topic;
 import org.apache.pulsar.broker.service.persistent.PersistentTopic;
-import org.apache.pulsar.common.policies.data.BacklogQuota;
+import org.apache.pulsar.broker.service.persistent.PersistentTopicMetrics;
+import org.apache.pulsar.broker.service.persistent.PersistentTopicMetrics.BacklogQuotaMetrics;
+import org.apache.pulsar.broker.stats.prometheus.metrics.PrometheusLabels;
+import org.apache.pulsar.common.policies.data.BacklogQuota.BacklogQuotaType;
 import org.apache.pulsar.common.policies.data.stats.ConsumerStatsImpl;
 import org.apache.pulsar.common.policies.data.stats.NonPersistentSubscriptionStatsImpl;
 import org.apache.pulsar.common.policies.data.stats.NonPersistentTopicStatsImpl;
@@ -44,6 +48,14 @@ import org.apache.pulsar.compaction.CompactorMXBean;
 
 @Slf4j
 public class NamespaceStatsAggregator {
+
+    private static final FastThreadLocal<AggregatedBrokerStats> localBrokerStats =
+            new FastThreadLocal<>() {
+                @Override
+                protected AggregatedBrokerStats initialValue() {
+                    return new AggregatedBrokerStats();
+                }
+            };
 
     private static final FastThreadLocal<AggregatedNamespaceStats> localNamespaceStats =
             new FastThreadLocal<>() {
@@ -64,14 +76,13 @@ public class NamespaceStatsAggregator {
                                 boolean includeProducerMetrics, boolean splitTopicAndPartitionIndexLabel,
                                 PrometheusMetricStreams stream) {
         String cluster = pulsar.getConfiguration().getClusterName();
+        AggregatedBrokerStats brokerStats = localBrokerStats.get();
+        brokerStats.reset();
         AggregatedNamespaceStats namespaceStats = localNamespaceStats.get();
         TopicStats topicStats = localTopicStats.get();
         Optional<CompactorMXBean> compactorMXBean = getCompactorMXBean(pulsar);
         LongAdder topicsCount = new LongAdder();
         Map<String, Long> localNamespaceTopicCount = new HashMap<>();
-
-        printDefaultBrokerStats(stream, cluster);
-
         pulsar.getBrokerService().getMultiLayerTopicMap().forEach((namespace, bundlesMap) -> {
             namespaceStats.reset();
             topicsCount.reset();
@@ -82,6 +93,8 @@ public class NamespaceStatsAggregator {
                         pulsar.getConfiguration().isExposeSubscriptionBacklogSizeInPrometheus(),
                         compactorMXBean
                 );
+
+                brokerStats.updateStats(topicStats);
 
                 if (includeTopicMetrics) {
                     topicsCount.add(1);
@@ -104,6 +117,8 @@ public class NamespaceStatsAggregator {
         if (includeTopicMetrics) {
             printTopicsCountStats(stream, localNamespaceTopicCount, cluster);
         }
+
+        printBrokerStats(stream, cluster, brokerStats);
     }
 
     private static Optional<CompactorMXBean> getCompactorMXBean(PulsarService pulsar) {
@@ -115,6 +130,8 @@ public class NamespaceStatsAggregator {
                                             AggregatedSubscriptionStats subsStats) {
         stats.subscriptionsCount++;
         stats.msgBacklog += subscriptionStats.msgBacklog;
+        subsStats.bytesOutCounter = subscriptionStats.bytesOutCounter;
+        subsStats.msgOutCounter = subscriptionStats.msgOutCounter;
         subsStats.msgBacklog = subscriptionStats.msgBacklog;
         subsStats.msgDelayed = subscriptionStats.msgDelayed;
         subsStats.msgRateExpired = subscriptionStats.msgRateExpired;
@@ -126,6 +143,7 @@ public class NamespaceStatsAggregator {
         subsStats.lastConsumedTimestamp = subscriptionStats.lastConsumedTimestamp;
         subsStats.lastMarkDeleteAdvancedTimestamp = subscriptionStats.lastMarkDeleteAdvancedTimestamp;
         subsStats.consumersCount = subscriptionStats.consumers.size();
+        subsStats.blockedSubscriptionOnUnackedMsgs = subscriptionStats.blockedSubscriptionOnUnackedMsgs;
         subscriptionStats.consumers.forEach(cStats -> {
             stats.consumersCount++;
             subsStats.unackedMessages += cStats.unackedMessages;
@@ -133,11 +151,6 @@ public class NamespaceStatsAggregator {
             subsStats.msgRateOut += cStats.msgRateOut;
             subsStats.messageAckRate += cStats.messageAckRate;
             subsStats.msgThroughputOut += cStats.msgThroughputOut;
-            subsStats.bytesOutCounter += cStats.bytesOutCounter;
-            subsStats.msgOutCounter += cStats.msgOutCounter;
-            if (!subsStats.blockedSubscriptionOnUnackedMsgs && cStats.blockedConsumerOnUnackedMsgs) {
-                subsStats.blockedSubscriptionOnUnackedMsgs = true;
-            }
         });
         stats.rateOut += subsStats.msgRateOut;
         stats.throughputOut += subsStats.msgThroughputOut;
@@ -145,16 +158,19 @@ public class NamespaceStatsAggregator {
         subsStats.filterAcceptedMsgCount = subscriptionStats.filterAcceptedMsgCount;
         subsStats.filterRejectedMsgCount = subscriptionStats.filterRejectedMsgCount;
         subsStats.filterRescheduledMsgCount = subscriptionStats.filterRescheduledMsgCount;
+        subsStats.delayedMessageIndexSizeInBytes = subscriptionStats.delayedMessageIndexSizeInBytes;
+        subsStats.bucketDelayedIndexStats = subscriptionStats.bucketDelayedIndexStats;
     }
 
+    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     private static void getTopicStats(Topic topic, TopicStats stats, boolean includeConsumerMetrics,
                                       boolean includeProducerMetrics, boolean getPreciseBacklog,
                                       boolean subscriptionBacklogSize, Optional<CompactorMXBean> compactorMXBean) {
         stats.reset();
 
-        if (topic instanceof PersistentTopic) {
+        if (topic instanceof PersistentTopic persistentTopic) {
             // Managed Ledger stats
-            ManagedLedger ml = ((PersistentTopic) topic).getManagedLedger();
+            ManagedLedger ml = persistentTopic.getManagedLedger();
             ManagedLedgerMBeanImpl mlStats = (ManagedLedgerMBeanImpl) ml.getStats();
 
             stats.managedLedgerStats.storageSize = mlStats.getStoredMessagesSize();
@@ -162,9 +178,10 @@ public class NamespaceStatsAggregator {
             stats.managedLedgerStats.backlogSize = ml.getEstimatedBacklogSize();
             stats.managedLedgerStats.offloadedStorageUsed = ml.getOffloadedSize();
             stats.backlogQuotaLimit = topic
-                    .getBacklogQuota(BacklogQuota.BacklogQuotaType.destination_storage).getLimitSize();
+                    .getBacklogQuota(BacklogQuotaType.destination_storage).getLimitSize();
             stats.backlogQuotaLimitTime = topic
-                    .getBacklogQuota(BacklogQuota.BacklogQuotaType.message_age).getLimitTime();
+                    .getBacklogQuota(BacklogQuotaType.message_age).getLimitTime();
+            stats.backlogAgeSeconds = topic.getBestEffortOldestUnacknowledgedMessageAgeSeconds();
 
             stats.managedLedgerStats.storageWriteLatencyBuckets
                     .addAll(mlStats.getInternalAddEntryLatencyBuckets());
@@ -178,7 +195,18 @@ public class NamespaceStatsAggregator {
 
             stats.managedLedgerStats.storageWriteRate = mlStats.getAddEntryMessagesRate();
             stats.managedLedgerStats.storageReadRate = mlStats.getReadEntriesRate();
+            stats.managedLedgerStats.storageReadCacheMissesRate = mlStats.getReadEntriesOpsCacheMissesRate();
+
+            // Topic Stats
+            PersistentTopicMetrics persistentTopicMetrics = persistentTopic.getPersistentTopicMetrics();
+
+            BacklogQuotaMetrics backlogQuotaMetrics = persistentTopicMetrics.getBacklogQuotaMetrics();
+            stats.sizeBasedBacklogQuotaExceededEvictionCount =
+                    backlogQuotaMetrics.getSizeBasedBacklogQuotaExceededEvictionCount();
+            stats.timeBasedBacklogQuotaExceededEvictionCount =
+                    backlogQuotaMetrics.getTimeBasedBacklogQuotaExceededEvictionCount();
         }
+
         TopicStatsImpl tStatus = topic.getStats(getPreciseBacklog, subscriptionBacklogSize, false);
         stats.msgInCounter = tStatus.msgInCounter;
         stats.bytesInCounter = tStatus.bytesInCounter;
@@ -186,7 +214,8 @@ public class NamespaceStatsAggregator {
         stats.bytesOutCounter = tStatus.bytesOutCounter;
         stats.averageMsgSize = tStatus.averageMsgSize;
         stats.publishRateLimitedTimes = tStatus.publishRateLimitedTimes;
-        stats.delayedTrackerMemoryUsage = tStatus.delayedMessageIndexSizeInBytes;
+        stats.delayedMessageIndexSizeInBytes = tStatus.delayedMessageIndexSizeInBytes;
+        stats.bucketDelayedIndexStats = tStatus.bucketDelayedIndexStats;
         stats.abortedTxnCount = tStatus.abortedTxnCount;
         stats.ongoingTxnCount = tStatus.ongoingTxnCount;
         stats.committedTxnCount = tStatus.committedTxnCount;
@@ -302,22 +331,33 @@ public class NamespaceStatsAggregator {
                 });
     }
 
-    private static void printDefaultBrokerStats(PrometheusMetricStreams stream, String cluster) {
-        // Print metrics with 0 values. This is necessary to have the available brokers being
+    private static void printBrokerStats(PrometheusMetricStreams stream, String cluster,
+                                         AggregatedBrokerStats brokerStats) {
+        // Print metrics values. This is necessary to have the available brokers being
         // reported in the brokers dashboard even if they don't have any topic or traffic
-        writeMetric(stream, "pulsar_topics_count", 0, cluster);
-        writeMetric(stream, "pulsar_subscriptions_count", 0, cluster);
-        writeMetric(stream, "pulsar_producers_count", 0, cluster);
-        writeMetric(stream, "pulsar_consumers_count", 0, cluster);
-        writeMetric(stream, "pulsar_rate_in", 0, cluster);
-        writeMetric(stream, "pulsar_rate_out", 0, cluster);
-        writeMetric(stream, "pulsar_throughput_in", 0, cluster);
-        writeMetric(stream, "pulsar_throughput_out", 0, cluster);
-        writeMetric(stream, "pulsar_storage_size", 0, cluster);
-        writeMetric(stream, "pulsar_storage_logical_size", 0, cluster);
-        writeMetric(stream, "pulsar_storage_write_rate", 0, cluster);
-        writeMetric(stream, "pulsar_storage_read_rate", 0, cluster);
-        writeMetric(stream, "pulsar_msg_backlog", 0, cluster);
+        writeMetric(stream, "pulsar_broker_topics_count", brokerStats.topicsCount, cluster);
+        writeMetric(stream, "pulsar_broker_subscriptions_count", brokerStats.subscriptionsCount, cluster);
+        writeMetric(stream, "pulsar_broker_producers_count", brokerStats.producersCount, cluster);
+        writeMetric(stream, "pulsar_broker_consumers_count", brokerStats.consumersCount, cluster);
+        writeMetric(stream, "pulsar_broker_rate_in", brokerStats.rateIn, cluster);
+        writeMetric(stream, "pulsar_broker_rate_out", brokerStats.rateOut, cluster);
+        writeMetric(stream, "pulsar_broker_throughput_in", brokerStats.throughputIn, cluster);
+        writeMetric(stream, "pulsar_broker_throughput_out", brokerStats.throughputOut, cluster);
+        writeMetric(stream, "pulsar_broker_storage_size", brokerStats.storageSize, cluster);
+        writeMetric(stream, "pulsar_broker_storage_logical_size", brokerStats.storageLogicalSize, cluster);
+        writeMetric(stream, "pulsar_broker_storage_write_rate", brokerStats.storageWriteRate, cluster);
+        writeMetric(stream, "pulsar_broker_storage_read_rate", brokerStats.storageReadRate, cluster);
+        writeMetric(stream, "pulsar_broker_storage_read_cache_misses_rate",
+                brokerStats.storageReadCacheMissesRate, cluster);
+
+        writePulsarBacklogQuotaMetricBrokerLevel(stream,
+                "pulsar_broker_storage_backlog_quota_exceeded_evictions_total",
+                brokerStats.sizeBasedBacklogQuotaExceededEvictionCount, cluster, BacklogQuotaType.destination_storage);
+        writePulsarBacklogQuotaMetricBrokerLevel(stream,
+                "pulsar_broker_storage_backlog_quota_exceeded_evictions_total",
+                brokerStats.timeBasedBacklogQuotaExceededEvictionCount, cluster, BacklogQuotaType.message_age);
+
+        writeMetric(stream, "pulsar_broker_msg_backlog", brokerStats.msgBacklog, cluster);
     }
 
     private static void printTopicsCountStats(PrometheusMetricStreams stream, Map<String, Long> namespaceTopicsCount,
@@ -355,6 +395,7 @@ public class NamespaceStatsAggregator {
                 stats.managedLedgerStats.storageLogicalSize, cluster, namespace);
         writeMetric(stream, "pulsar_storage_backlog_size", stats.managedLedgerStats.backlogSize, cluster,
                 namespace);
+
         writeMetric(stream, "pulsar_storage_offloaded_size",
                 stats.managedLedgerStats.offloadedStorageUsed, cluster, namespace);
 
@@ -362,13 +403,27 @@ public class NamespaceStatsAggregator {
                 cluster, namespace);
         writeMetric(stream, "pulsar_storage_read_rate", stats.managedLedgerStats.storageReadRate,
                 cluster, namespace);
+        writeMetric(stream, "pulsar_storage_read_cache_misses_rate",
+                stats.managedLedgerStats.storageReadCacheMissesRate, cluster, namespace);
 
         writeMetric(stream, "pulsar_subscription_delayed", stats.msgDelayed, cluster, namespace);
 
-        writeMetric(stream, "pulsar_delayed_message_index_size_bytes", stats.delayedTrackerMemoryUsage, cluster,
+        writeMetric(stream, "pulsar_delayed_message_index_size_bytes", stats.delayedMessageIndexSizeInBytes, cluster,
                 namespace);
 
+        stats.bucketDelayedIndexStats.forEach((k, metric) -> {
+            writeMetric(stream, metric.name, metric.value, cluster, namespace, metric.labelsAndValues);
+        });
+
         writePulsarMsgBacklog(stream, stats.msgBacklog, cluster, namespace);
+        writePulsarBacklogQuotaMetricNamespaceLevel(stream,
+                "pulsar_storage_backlog_quota_exceeded_evictions_total",
+                stats.sizeBasedBacklogQuotaExceededEvictionCount, cluster, namespace,
+                BacklogQuotaType.destination_storage);
+        writePulsarBacklogQuotaMetricNamespaceLevel(stream,
+                "pulsar_storage_backlog_quota_exceeded_evictions_total",
+                stats.timeBasedBacklogQuotaExceededEvictionCount, cluster, namespace,
+                BacklogQuotaType.message_age);
 
         stats.managedLedgerStats.storageWriteLatencyBuckets.refresh();
         long[] latencyBuckets = stats.managedLedgerStats.storageWriteLatencyBuckets.getBuckets();
@@ -448,6 +503,25 @@ public class NamespaceStatsAggregator {
                 replStats -> replStats.replicationDelayInSeconds, cluster, namespace);
     }
 
+    @SuppressWarnings("SameParameterValue")
+    private static void writePulsarBacklogQuotaMetricBrokerLevel(PrometheusMetricStreams stream, String metricName,
+                                                                 Number value, String cluster,
+                                                                 BacklogQuotaType backlogQuotaType) {
+        String quotaTypeLabelValue = PrometheusLabels.backlogQuotaTypeLabel(backlogQuotaType);
+        stream.writeSample(metricName, value, "cluster", cluster,
+                "quota_type", quotaTypeLabelValue);
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private static void writePulsarBacklogQuotaMetricNamespaceLevel(PrometheusMetricStreams stream, String metricName,
+                                                                    Number value, String cluster, String namespace,
+                                                                    BacklogQuotaType backlogQuotaType) {
+        String quotaTypeLabelValue = PrometheusLabels.backlogQuotaTypeLabel(backlogQuotaType);
+        stream.writeSample(metricName, value, "cluster", cluster,
+                "namespace", namespace,
+                "quota_type", quotaTypeLabelValue);
+    }
+
     private static void writePulsarMsgBacklog(PrometheusMetricStreams stream, Number value,
                                               String cluster, String namespace) {
         stream.writeSample("pulsar_msg_backlog", value, "cluster", cluster, "namespace", namespace,
@@ -461,8 +535,10 @@ public class NamespaceStatsAggregator {
     }
 
     private static void writeMetric(PrometheusMetricStreams stream, String metricName, Number value, String cluster,
-                                    String namespace) {
-        stream.writeSample(metricName, value, "cluster", cluster, "namespace", namespace);
+                                    String namespace, String... extraLabelsAndValues) {
+        String[] labelsAndValues = new String[]{"cluster", cluster, "namespace", namespace};
+        String[] labels = ArrayUtils.addAll(labelsAndValues, extraLabelsAndValues);
+        stream.writeSample(metricName, value, labels);
     }
 
     private static void writeReplicationStat(PrometheusMetricStreams stream, String metricName,

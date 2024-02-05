@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -23,7 +23,7 @@ import com.beust.jcommander.Parameter;
 import java.util.List;
 import org.apache.pulsar.broker.resources.PulsarResources;
 import org.apache.pulsar.common.naming.NamespaceName;
-import org.apache.pulsar.common.util.CmdGenerateDocs;
+import org.apache.pulsar.docs.tools.CmdGenerateDocs;
 import org.apache.pulsar.metadata.api.MetadataStore;
 
 /**
@@ -83,7 +83,7 @@ public class PulsarInitialNamespaceSetup {
         }
 
         try (MetadataStore configStore = PulsarClusterMetadataSetup
-                .initMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
+                .initConfigMetadataStore(arguments.configurationStore, arguments.zkSessionTimeoutMillis)) {
             PulsarResources pulsarResources = new PulsarResources(null, configStore);
             for (String namespace : arguments.namespaces) {
                 NamespaceName namespaceName = null;

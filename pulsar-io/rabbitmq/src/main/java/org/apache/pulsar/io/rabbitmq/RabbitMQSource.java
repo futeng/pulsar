@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.pulsar.io.rabbitmq;
 
 import com.rabbitmq.client.AMQP;
@@ -55,7 +54,7 @@ public class RabbitMQSource extends PushSource<byte[]> {
 
     @Override
     public void open(Map<String, Object> config, SourceContext sourceContext) throws Exception {
-        rabbitMQSourceConfig = RabbitMQSourceConfig.load(config);
+        rabbitMQSourceConfig = RabbitMQSourceConfig.load(config, sourceContext);
         rabbitMQSourceConfig.validate();
 
         ConnectionFactory connectionFactory = rabbitMQSourceConfig.createConnectionFactory();

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -47,19 +47,22 @@ public class TopicList {
     }
     public static List<String> filterTopics(List<String> original, Pattern topicsPattern) {
 
-        final Pattern shortenedTopicsPattern = topicsPattern.toString().contains(SCHEME_SEPARATOR)
-                ? Pattern.compile(SCHEME_SEPARATOR_PATTERN.split(topicsPattern.toString())[1]) : topicsPattern;
+        final Pattern shortenedTopicsPattern = Pattern.compile(removeTopicDomainScheme(topicsPattern.toString()));
 
         return original.stream()
                 .map(TopicName::get)
+                .filter(topicName -> {
+                    String partitionedTopicName = topicName.getPartitionedTopicName();
+                    String removedScheme = SCHEME_SEPARATOR_PATTERN.split(partitionedTopicName)[1];
+                    return shortenedTopicsPattern.matcher(removedScheme).matches();
+                })
                 .map(TopicName::toString)
-                .filter(topic -> shortenedTopicsPattern.matcher(SCHEME_SEPARATOR_PATTERN.split(topic)[1]).matches())
                 .collect(Collectors.toList());
     }
 
-    public static List<String> filterTransactionInternalName(List<String> original) {
+    public static List<String> filterSystemTopic(List<String> original) {
         return original.stream()
-                .filter(topic -> !SystemTopicNames.isTransactionInternalName(TopicName.get(topic)))
+                .filter(topic -> !SystemTopicNames.isSystemTopic(TopicName.get(topic)))
                 .collect(Collectors.toList());
     }
 
@@ -77,5 +80,17 @@ public class TopicList {
         HashSet<String> s1 = new HashSet<>(list1);
         s1.removeAll(list2);
         return s1;
+    }
+
+    private static String removeTopicDomainScheme(String originalRegexp) {
+        if (!originalRegexp.toString().contains(SCHEME_SEPARATOR)) {
+            return originalRegexp;
+        }
+        String removedTopicDomain = SCHEME_SEPARATOR_PATTERN.split(originalRegexp.toString())[1];
+        if (originalRegexp.contains("^")) {
+            return String.format("^%s", removedTopicDomain);
+        } else {
+            return removedTopicDomain;
+        }
     }
 }

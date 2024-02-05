@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -108,7 +108,7 @@ public class PulsarGenericObjectSinkTest extends PulsarStandaloneTestSuite {
                         Schema.KeyValue(Schema.STRING, Schema.INT32), new KeyValue<>("foo", 123)),
                 new SinkSpec<>("test-kv-sink-input-kv-avro-json-inl-" + randomName(8),
                         Schema.KeyValue(Schema.AVRO(PojoKey.class), Schema.JSON(Pojo.class), KeyValueEncodingType.INLINE), new KeyValue<>(PojoKey.builder().field1("a").build(), Pojo.builder().field1("a").field2(2).build())),
-                new SinkSpec<>("test-kv-sink-input-kv-avro-json-sep-" + randomName(8),
+                new SinkSpec("test-kv-sink-input-kv-avro-json-sep-" + randomName(8),
                         Schema.KeyValue(Schema.AVRO(PojoKey.class), Schema.JSON(Pojo.class), KeyValueEncodingType.SEPARATED), new KeyValue<>(PojoKey.builder().field1("a").build(), Pojo.builder().field1("a").field2(2).build()))
         );
 

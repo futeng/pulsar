@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,6 +27,7 @@ import static org.apache.bookkeeper.bookie.BookKeeperServerStats.BOOKIE_SCOPE;
 import static org.apache.bookkeeper.bookie.BookKeeperServerStats.LD_INDEX_SCOPE;
 import static org.apache.bookkeeper.bookie.BookKeeperServerStats.LD_LEDGER_SCOPE;
 import static org.apache.bookkeeper.util.BookKeeperConstants.AVAILABLE_NODE;
+import static org.apache.pulsar.common.util.PortManager.nextLockedFreePort;
 import static org.testng.Assert.assertFalse;
 import com.google.common.base.Stopwatch;
 import java.io.File;
@@ -69,7 +70,6 @@ import org.apache.bookkeeper.discover.RegistrationManager;
 import org.apache.bookkeeper.meta.LedgerManager;
 import org.apache.bookkeeper.meta.LedgerManagerFactory;
 import org.apache.bookkeeper.meta.MetadataBookieDriver;
-import org.apache.bookkeeper.meta.zk.ZKMetadataDriverBase;
 import org.apache.bookkeeper.metastore.InMemoryMetaStore;
 import org.apache.bookkeeper.net.BookieId;
 import org.apache.bookkeeper.net.BookieSocketAddress;
@@ -82,9 +82,8 @@ import org.apache.bookkeeper.stats.StatsLogger;
 import org.apache.bookkeeper.test.TmpDirs;
 import org.apache.bookkeeper.test.ZooKeeperCluster;
 import org.apache.bookkeeper.test.ZooKeeperClusterUtil;
-import org.apache.bookkeeper.test.ZooKeeperUtil;
 import org.apache.bookkeeper.util.DiskChecker;
-import org.apache.bookkeeper.util.PortManager;
+import org.apache.pulsar.common.util.PortManager;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooKeeper;
 import org.slf4j.Logger;
@@ -129,6 +128,8 @@ public abstract class BookKeeperClusterTestCase {
     private final ByteBufAllocatorWithOomHandler allocator = BookieResources.createAllocator(baseConf);
 
     private boolean isAutoRecoveryEnabled;
+
+    private final List<Integer> bookiePorts = new ArrayList<>();
 
     SynchronousQueue<Throwable> asyncExceptions = new SynchronousQueue<>();
     protected void captureThrowable(Runnable c) {
@@ -191,7 +192,7 @@ public abstract class BookKeeperClusterTestCase {
         return zkUtil.getMetadataServiceUri(ledgersRootPath);
     }
 
-    @AfterMethod
+    @AfterMethod(alwaysRun = true)
     public void tearDown() throws Exception {
         boolean failed = false;
         for (Throwable e : asyncExceptions) {
@@ -283,6 +284,7 @@ public abstract class BookKeeperClusterTestCase {
             t.shutdown();
         }
         servers.clear();
+        bookiePorts.removeIf(PortManager::releaseLockedPort);
     }
 
     protected ServerConfiguration newServerConfiguration() throws Exception {
@@ -290,7 +292,7 @@ public abstract class BookKeeperClusterTestCase {
 
         int port;
         if (baseConf.isEnableLocalTransport() || !baseConf.getAllowEphemeralPorts()) {
-            port = PortManager.nextFreePort();
+            port = nextLockedFreePort();
         } else {
             port = 0;
         }
@@ -483,7 +485,7 @@ public abstract class BookKeeperClusterTestCase {
     public ServerConfiguration killBookieAndWaitForZK(int index) throws Exception {
         ServerTester tester = servers.get(index); // IKTODO: this method is awful
         ServerConfiguration ret = killBookie(index);
-        while (zkc.exists(ZKMetadataDriverBase.resolveZkLedgersRootPath(baseConf) + "/" + AVAILABLE_NODE + "/"
+        while (zkc.exists("/ledgers/" + AVAILABLE_NODE + "/"
                 + tester.getServer().getBookieId().toString(), false) != null) {
             Thread.sleep(500);
         }

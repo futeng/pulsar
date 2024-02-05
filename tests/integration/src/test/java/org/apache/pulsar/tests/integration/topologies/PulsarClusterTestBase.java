@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -34,7 +34,10 @@ import static java.util.stream.Collectors.joining;
 @Slf4j
 public abstract class PulsarClusterTestBase extends PulsarTestBase {
     protected final Map<String, String> brokerEnvs = new HashMap<>();
+    protected final Map<String, String> bookkeeperEnvs = new HashMap<>();
+    protected final Map<String, String> proxyEnvs = new HashMap<>();
     protected final List<Integer> brokerAdditionalPorts = new LinkedList<>();
+    protected final List<Integer> bookieAdditionalPorts = new LinkedList<>();
 
     @Override
     protected final void setup() throws Exception {
@@ -91,7 +94,7 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
         return pulsarCluster;
     }
 
-    private static Supplier<String> stringSupplier(Supplier<String> supplier) {
+    protected static Supplier<String> stringSupplier(Supplier<String> supplier) {
         return supplier;
     }
 
@@ -107,6 +110,7 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
         PulsarClusterSpec.PulsarClusterSpecBuilder specBuilder = PulsarClusterSpec.builder()
                 .clusterName(clusterName)
                 .brokerEnvs(brokerEnvs)
+                .proxyEnvs(proxyEnvs)
                 .brokerAdditionalPorts(brokerAdditionalPorts);
 
         setupCluster(beforeSetupCluster(clusterName, specBuilder).build());

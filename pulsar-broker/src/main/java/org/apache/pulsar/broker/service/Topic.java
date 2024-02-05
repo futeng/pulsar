@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,8 +18,8 @@
  */
 package org.apache.pulsar.broker.service;
 
-import com.google.common.collect.ImmutableMap;
 import io.netty.buffer.ByteBuf;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit;
 import org.apache.bookkeeper.mledger.Position;
 import org.apache.pulsar.broker.service.persistent.DispatchRateLimiter;
 import org.apache.pulsar.broker.service.persistent.SubscribeRateLimiter;
-import org.apache.pulsar.broker.service.plugin.EntryFilterWithClassLoader;
+import org.apache.pulsar.broker.service.plugin.EntryFilter;
 import org.apache.pulsar.broker.stats.ClusterReplicationMetrics;
 import org.apache.pulsar.broker.stats.NamespaceStats;
 import org.apache.pulsar.client.api.MessageId;
@@ -68,7 +68,7 @@ public interface Topic {
 
         /**
          * Return the producer name for the original producer.
-         *
+         * <p>
          * For messages published locally, this will return the same local producer name, though in case of replicated
          * messages, the original producer name will differ
          */
@@ -101,6 +101,10 @@ public interface Topic {
             return  1L;
         }
 
+        default long getMsgSize() {
+            return  -1L;
+        }
+
         default boolean isMarkerMessage() {
             return false;
         }
@@ -115,6 +119,14 @@ public interface Topic {
         default boolean isChunked() {
             return false;
         }
+
+        default long getEntryTimestamp() {
+            return -1L;
+        }
+
+        default void setEntryTimestamp(long entryTimestamp) {
+
+        }
     }
 
     CompletableFuture<Void> initialize();
@@ -124,7 +136,7 @@ public interface Topic {
     /**
      * Tries to add a producer to the topic. Several validations will be performed.
      *
-     * @param producer
+     * @param producer Producer to add
      * @param producerQueuedFuture
      *            a future that will be triggered if the producer is being queued up prior of getting established
      * @return the "topic epoch" if there is one or empty
@@ -136,7 +148,7 @@ public interface Topic {
     /**
      * Wait TransactionBuffer Recovers completely.
      * Take snapshot after TB Recovers completely.
-     * @param isTxnEnabled
+     * @param isTxnEnabled isTxnEnabled
      * @return a future which has completely if isTxn = false. Or a future return by takeSnapshot.
      */
     CompletableFuture<Void> checkIfTransactionBufferRecoverCompletely(boolean isTxnEnabled);
@@ -184,7 +196,12 @@ public interface Topic {
 
     CompletableFuture<Void> close(boolean closeWithoutWaitingClientDisconnect);
 
+    CompletableFuture<Void> close(
+            boolean disconnectClients, boolean closeWithoutWaitingClientDisconnect);
+
     void checkGC();
+
+    CompletableFuture<Void> checkClusterMigration();
 
     void checkInactiveSubscriptions();
 
@@ -202,27 +219,11 @@ public interface Topic {
 
     void checkMessageDeduplicationInfo();
 
-    void checkTopicPublishThrottlingRate();
+    void incrementPublishCount(Producer producer, int numOfMessages, long msgSizeInBytes);
 
-    void incrementPublishCount(int numOfMessages, long msgSizeInBytes);
+    boolean shouldProducerMigrate();
 
-    void resetTopicPublishCountAndEnableReadIfRequired();
-
-    void resetBrokerPublishCountAndEnableReadIfRequired(boolean doneReset);
-
-    boolean isPublishRateExceeded();
-
-    boolean isTopicPublishRateExceeded(int msgSize, int numMessages);
-
-    boolean isResourceGroupRateLimitingEnabled();
-
-    boolean isResourceGroupPublishRateExceeded(int msgSize, int numMessages);
-
-    boolean isBrokerPublishRateExceeded();
-
-    void disableCnxAutoRead();
-
-    void enableCnxAutoRead();
+    boolean isReplicationBacklogExist();
 
     CompletableFuture<Void> onPoliciesUpdate(Policies data);
 
@@ -234,11 +235,20 @@ public interface Topic {
 
     boolean isReplicated();
 
+    boolean isShadowReplicated();
+
     EntryFilters getEntryFiltersPolicy();
 
-    ImmutableMap<String, EntryFilterWithClassLoader> getEntryFilters();
+    List<EntryFilter> getEntryFilters();
 
     BacklogQuota getBacklogQuota(BacklogQuotaType backlogQuotaType);
+
+    /**
+     * Uses the best-effort (not necessarily up-to-date) information available to return the age.
+     * @return The oldest unacknowledged message age in seconds, or -1 if not available
+     */
+    long getBestEffortOldestUnacknowledgedMessageAgeSeconds();
+
 
     void updateRates(NamespaceStats nsStats, NamespaceBundleStats currentBundleStats,
             StatsOutputStream topicStatsStream, ClusterReplicationMetrics clusterReplicationMetrics,
@@ -248,12 +258,18 @@ public interface Topic {
 
     ConcurrentOpenHashMap<String, ? extends Replicator> getReplicators();
 
+    ConcurrentOpenHashMap<String, ? extends Replicator> getShadowReplicators();
+
     TopicStatsImpl getStats(boolean getPreciseBacklog, boolean subscriptionBacklogSize,
                             boolean getEarliestTimeInBacklog);
+
+    TopicStatsImpl getStats(GetStatsOptions getStatsOptions);
 
     CompletableFuture<? extends TopicStatsImpl> asyncGetStats(boolean getPreciseBacklog,
                                                               boolean subscriptionBacklogSize,
                                                               boolean getEarliestTimeInBacklog);
+
+    CompletableFuture<? extends TopicStatsImpl> asyncGetStats(GetStatsOptions getStatsOptions);
 
     CompletableFuture<PersistentTopicInternalStats> getInternalStats(boolean includeLedgerMetadata);
 
@@ -308,6 +324,8 @@ public interface Topic {
     }
 
     boolean isPersistent();
+
+    boolean isTransferring();
 
     /* ------ Transaction related ------ */
 

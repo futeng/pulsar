@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,6 +19,7 @@
 package org.apache.pulsar.client.impl;
 
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.spy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertSame;
 import static org.testng.Assert.assertTrue;
@@ -26,6 +27,7 @@ import static org.testng.Assert.fail;
 
 import com.google.common.collect.Lists;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -33,23 +35,31 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
+import io.netty.util.Timeout;
+import org.apache.pulsar.broker.BrokerTestUtil;
 import org.apache.pulsar.broker.namespace.NamespaceService;
 import org.apache.pulsar.client.api.Consumer;
+import org.apache.pulsar.client.api.InjectedClientCnxClientBuilder;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.MessageRoutingMode;
 import org.apache.pulsar.client.api.Producer;
 import org.apache.pulsar.client.api.ProducerConsumerBase;
+import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.RegexSubscriptionMode;
 import org.apache.pulsar.client.api.Schema;
 import org.apache.pulsar.client.api.SubscriptionType;
+import org.apache.pulsar.common.api.proto.BaseCommand;
+import org.apache.pulsar.common.api.proto.CommandWatchTopicListSuccess;
 import org.apache.pulsar.common.naming.NamespaceName;
 import org.apache.pulsar.common.policies.data.TenantInfoImpl;
 import org.awaitility.Awaitility;
+import org.awaitility.reflect.WhiteboxImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 @Test(groups = "broker-impl")
@@ -63,6 +73,9 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
     public void setup() throws Exception {
         // set isTcpLookup = true, to use BinaryProtoLookupService to get topics for a pattern.
         isTcpLookup = true;
+        // enabled transaction, to test pattern consumers not subscribe to transaction system topic.
+        conf.setTransactionCoordinatorEnabled(true);
+        conf.setSubscriptionPatternMaxLength(10000);
         super.internalSetup();
         super.producerBaseSetup();
     }
@@ -132,6 +145,31 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
         } catch (IllegalArgumentException e) {
             // expected
         }
+
+        // test failing builder with empty pattern should fail
+        try {
+            pattern = Pattern.compile("");
+            pulsarClient.newConsumer()
+                    .topicsPattern(pattern)
+                    .subscriptionName(subscriptionName)
+                    .subscriptionType(SubscriptionType.Shared)
+                    .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
+                    .subscribe();
+            fail("subscribe4 with empty pattern should fail.");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "Pattern has already been set or is empty.");
+        }
+        try {
+            pulsarClient.newConsumer()
+                    .topicsPattern("")
+                    .subscriptionName(subscriptionName)
+                    .subscriptionType(SubscriptionType.Shared)
+                    .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
+                    .subscribe();
+            fail("subscribe5 with empty pattern should fail.");
+        } catch (IllegalArgumentException e) {
+            assertEquals(e.getMessage(), "topicsPattern should not be null or empty");
+        }
     }
 
     // verify consumer create success, and works well.
@@ -181,6 +219,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .subscribe();
         assertTrue(consumer.getTopic().startsWith(PatternMultiTopicsConsumerImpl.DUMMY_TOPIC_NAME_PREFIX));
 
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
+
         // 4. verify consumer get methods, to get right number of partitions and topics.
         assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
         List<String> topics = ((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitions();
@@ -227,17 +271,74 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
     }
 
     @Test(timeOut = testTimeout)
+    public void testBinaryProtoSubscribeAllTopicOfNamespace() throws Exception {
+        String key = "testBinaryProtoSubscribeAllTopicOfNamespace";
+        String subscriptionName = "my-ex-subscription-" + key;
+        String topicName1 = "persistent://my-property/my-ns/pattern-topic-1-" + key;
+        String topicName2 = "persistent://my-property/my-ns/pattern-topic-2-" + key;
+        String topicName3 = "persistent://my-property/my-ns/pattern-topic-3-" + key;
+        Pattern pattern = Pattern.compile("my-property/my-ns/.*");
+
+        // 1. create partition
+        TenantInfoImpl tenantInfo = createDefaultTenantInfo();
+        admin.tenants().createTenant("prop", tenantInfo);
+        admin.topics().createPartitionedTopic(topicName1, 1);
+        admin.topics().createPartitionedTopic(topicName2, 2);
+        admin.topics().createPartitionedTopic(topicName3, 3);
+
+        // 2. create producer to trigger create system topic.
+        Producer<byte[]> producer = pulsarClient.newProducer().topic(topicName1)
+                .enableBatching(false)
+                .messageRoutingMode(MessageRoutingMode.SinglePartition)
+                .create();
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topicsPattern(pattern)
+                .patternAutoDiscoveryPeriod(2)
+                .subscriptionName(subscriptionName)
+                .subscriptionType(SubscriptionType.Shared)
+                .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
+                .receiverQueueSize(4)
+                .subscribe();
+        assertTrue(consumer.getTopic().startsWith(PatternMultiTopicsConsumerImpl.DUMMY_TOPIC_NAME_PREFIX));
+
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
+
+        // 4. verify consumer get methods, to get right number of partitions and topics.
+        assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
+        List<String> topics = ((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitions();
+        List<ConsumerImpl<byte[]>> consumers = ((PatternMultiTopicsConsumerImpl<byte[]>) consumer).getConsumers();
+
+        assertEquals(topics.size(), 6);
+        assertEquals(consumers.size(), 6);
+        assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 3);
+
+        topics.forEach(topic -> log.info("topic: {}", topic));
+        consumers.forEach(c -> log.info("consumer: {}", c.getTopic()));
+
+        IntStream.range(0, topics.size()).forEach(index ->
+                assertEquals(consumers.get(index).getTopic(), topics.get(index)));
+
+        consumer.unsubscribe();
+        producer.close();
+        consumer.close();
+    }
+
+    @Test(timeOut = testTimeout)
     public void testPubRateOnNonPersistent() throws Exception {
-        internalCleanup();
+        cleanup();
         conf.setMaxPublishRatePerTopicInBytes(10000L);
         conf.setMaxPublishRatePerTopicInMessages(100);
         Thread.sleep(500);
         isTcpLookup = true;
-        super.internalSetup();
-        super.producerBaseSetup();
+        setup();
         testBinaryProtoToGetTopicsOfNamespaceNonPersistent();
     }
-    
+
 	// verify consumer create success, and works well.
     @Test(timeOut = testTimeout)
     public void testBinaryProtoToGetTopicsOfNamespaceNonPersistent() throws Exception {
@@ -283,6 +384,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
             .subscriptionTopicsMode(RegexSubscriptionMode.NonPersistentOnly)
             .subscribe();
+
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
 
         // 4. verify consumer get methods, to get right number of partitions and topics.
         assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
@@ -375,6 +482,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
             .subscribe();
 
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
+
         // 4. verify consumer get methods, to get right number of partitions and topics.
         assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
         List<String> topics = ((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitions();
@@ -436,7 +549,7 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
         admin.topics().createPartitionedTopic(topicName2, 2);
         admin.topics().createPartitionedTopic(topicName3, 3);
 
-        // 2. Create consumer, this should success, but with empty sub-consumser internal
+        // 2. Create consumer, this should success, but with empty sub-consumer internal
         Consumer<byte[]> consumer = pulsarClient.newConsumer()
             .topicsPattern(pattern)
             .patternAutoDiscoveryPeriod(2)
@@ -445,6 +558,11 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
             .receiverQueueSize(4)
             .subscribe();
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
 
         // 3. verify consumer get methods, to get 5 number of partitions and topics.
         assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
@@ -509,13 +627,28 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
         producer3.close();
     }
 
-    @Test(timeOut = testTimeout)
-    public void testAutoSubscribePatterConsumerFromBrokerWatcher() throws Exception {
-        String key = "AutoSubscribePatternConsumer";
-        String subscriptionName = "my-ex-subscription-" + key;
+    @DataProvider(name= "delayTypesOfWatchingTopics")
+    public Object[][] delayTypesOfWatchingTopics(){
+        return new Object[][]{
+            {true},
+            {false}
+        };
+    }
 
-        Pattern pattern = Pattern.compile("persistent://my-property/my-ns/pattern-topic.*");
-        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+    @Test(timeOut = testTimeout, dataProvider = "delayTypesOfWatchingTopics")
+    public void testAutoSubscribePatterConsumerFromBrokerWatcher(boolean delayWatchingTopics) throws Exception {
+        final String key = "AutoSubscribePatternConsumer";
+        final String subscriptionName = "my-ex-subscription-" + key;
+        final Pattern pattern = Pattern.compile("persistent://my-property/my-ns/pattern-topic.*");
+
+        PulsarClient client = null;
+        if (delayWatchingTopics) {
+            client = createDelayWatchTopicsClient();
+        } else {
+            client = pulsarClient;
+        }
+
+        Consumer<byte[]> consumer = client.newConsumer()
                 .topicsPattern(pattern)
                 // Disable automatic discovery.
                 .patternAutoDiscoveryPeriod(1000)
@@ -540,7 +673,140 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 1);
         });
 
+        // cleanup.
         consumer.close();
+        admin.topics().deletePartitionedTopic(topicName);
+        if (delayWatchingTopics) {
+            client.close();
+        }
+    }
+
+    @DataProvider(name= "partitioned")
+    public Object[][] partitioned(){
+        return new Object[][]{
+                {true},
+                {false}
+        };
+    }
+
+    @Test(timeOut = testTimeout, dataProvider = "partitioned")
+    public void testPreciseRegexpSubscribe(boolean partitioned) throws Exception {
+        final String topicName = BrokerTestUtil.newUniqueName("persistent://public/default/tp");
+        final String subscriptionName = "s1";
+        final Pattern pattern = Pattern.compile(String.format("%s$", topicName));
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topicsPattern(pattern)
+                // Disable automatic discovery.
+                .patternAutoDiscoveryPeriod(1000)
+                .subscriptionName(subscriptionName)
+                .subscriptionType(SubscriptionType.Shared)
+                .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
+                .receiverQueueSize(4)
+                .subscribe();
+
+        // 1. create topic.
+        if (partitioned) {
+            admin.topics().createPartitionedTopic(topicName, 1);
+        } else {
+            admin.topics().createNonPartitionedTopic(topicName);
+        }
+
+        // 2. verify consumer can subscribe the topic.
+        assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
+        Awaitility.await().untilAsserted(() -> {
+            assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitions().size(), 1);
+            assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getConsumers().size(), 1);
+            if (partitioned) {
+                assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 1);
+            } else {
+                assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 0);
+            }
+        });
+
+        // cleanup.
+        consumer.close();
+        if (partitioned) {
+            admin.topics().deletePartitionedTopic(topicName);
+        } else {
+            admin.topics().delete(topicName);
+        }
+    }
+
+    @Test(timeOut = 240 * 1000, dataProvider = "partitioned")
+    public void testPreciseRegexpSubscribeDisabledTopicWatcher(boolean partitioned) throws Exception {
+        final String topicName = BrokerTestUtil.newUniqueName("persistent://public/default/tp");
+        final String subscriptionName = "s1";
+        final Pattern pattern = Pattern.compile(String.format("%s$", topicName));
+
+        // Close all ServerCnx by close client-side sockets to make the config changes effect.
+        pulsar.getConfig().setEnableBrokerSideSubscriptionPatternEvaluation(false);
+        reconnectAllConnections();
+
+        Consumer<byte[]> consumer = pulsarClient.newConsumer()
+                .topicsPattern(pattern)
+                // Disable brokerSideSubscriptionPatternEvaluation will leading disable topic list watcher.
+                // So set patternAutoDiscoveryPeriod to a little value.
+                .patternAutoDiscoveryPeriod(1)
+                .subscriptionName(subscriptionName)
+                .subscriptionType(SubscriptionType.Shared)
+                .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
+                .receiverQueueSize(4)
+                .subscribe();
+
+        // 1. create topic.
+        if (partitioned) {
+            admin.topics().createPartitionedTopic(topicName, 1);
+        } else {
+            admin.topics().createNonPartitionedTopic(topicName);
+        }
+
+        // 2. verify consumer can subscribe the topic.
+        // Since the minimum value of `patternAutoDiscoveryPeriod` is 60s, we set the test timeout to a triple value.
+        assertSame(pattern, ((PatternMultiTopicsConsumerImpl<?>) consumer).getPattern());
+        Awaitility.await().atMost(Duration.ofMinutes(3)).untilAsserted(() -> {
+            assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitions().size(), 1);
+            assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getConsumers().size(), 1);
+            if (partitioned) {
+                assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 1);
+            } else {
+                assertEquals(((PatternMultiTopicsConsumerImpl<?>) consumer).getPartitionedTopics().size(), 0);
+            }
+        });
+
+        // cleanup.
+        consumer.close();
+        if (partitioned) {
+            admin.topics().deletePartitionedTopic(topicName);
+        } else {
+            admin.topics().delete(topicName);
+        }
+        // Close all ServerCnx by close client-side sockets to make the config changes effect.
+        pulsar.getConfig().setEnableBrokerSideSubscriptionPatternEvaluation(true);
+        reconnectAllConnections();
+    }
+
+    private PulsarClient createDelayWatchTopicsClient() throws Exception {
+        ClientBuilderImpl clientBuilder = (ClientBuilderImpl) PulsarClient.builder().serviceUrl(lookupUrl.toString());
+        return InjectedClientCnxClientBuilder.create(clientBuilder,
+            (conf, eventLoopGroup) -> new ClientCnx(conf, eventLoopGroup) {
+                public CompletableFuture<CommandWatchTopicListSuccess> newWatchTopicList(
+                        BaseCommand command, long requestId) {
+                    // Inject 2 seconds delay when sending command New Watch Topics.
+                    CompletableFuture<CommandWatchTopicListSuccess> res = new CompletableFuture<>();
+                    new Thread(() -> {
+                        sleepSeconds(2);
+                        super.newWatchTopicList(command, requestId).whenComplete((v, ex) -> {
+                            if (ex != null) {
+                                res.completeExceptionally(ex);
+                            } else {
+                                res.complete(v);
+                            }
+                        });
+                    }).start();
+                    return res;
+                }
+            });
     }
 
     // simulate subscribe a pattern which has 3 topics, but then matched topic added in.
@@ -584,6 +850,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .ackTimeout(ackTimeOutMillis, TimeUnit.MILLISECONDS)
             .receiverQueueSize(4)
             .subscribe();
+
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
 
         assertTrue(consumer instanceof PatternMultiTopicsConsumerImpl);
 
@@ -695,6 +967,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .receiverQueueSize(4)
             .subscribe();
 
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
+
         assertTrue(consumer instanceof PatternMultiTopicsConsumerImpl);
 
         // 4. verify consumer get methods, to get 0 number of partitions and topics: 6=1+2+3
@@ -731,7 +1009,9 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
         // 7. call recheckTopics to unsubscribe topic 1,3, verify topics number: 2=6-1-3
         log.debug("recheck topics change");
         PatternMultiTopicsConsumerImpl<byte[]> consumer1 = ((PatternMultiTopicsConsumerImpl<byte[]>) consumer);
-        consumer1.run(consumer1.getRecheckPatternTimeout());
+        Timeout recheckPatternTimeout = spy(consumer1.getRecheckPatternTimeout());
+        doReturn(false).when(recheckPatternTimeout).isCancelled();
+        consumer1.run(recheckPatternTimeout);
         Thread.sleep(100);
         assertEquals(((PatternMultiTopicsConsumerImpl<byte[]>) consumer).getPartitions().size(), 2);
         assertEquals(((PatternMultiTopicsConsumerImpl<byte[]>) consumer).getConsumers().size(), 2);
@@ -778,6 +1058,12 @@ public class PatternTopicsConsumerImplTest extends ProducerConsumerBase {
             .patternAutoDiscoveryPeriod(1)
             .subscriptionName("sub")
             .subscribe();
+
+        // Wait topic list watcher creation.
+        Awaitility.await().untilAsserted(() -> {
+            CompletableFuture completableFuture = WhiteboxImpl.getInternalState(consumer, "watcherFuture");
+            assertTrue(completableFuture.isDone() && !completableFuture.isCompletedExceptionally());
+        });
 
         assertTrue(consumer instanceof PatternMultiTopicsConsumerImpl);
         PatternMultiTopicsConsumerImpl<String> consumerImpl = (PatternMultiTopicsConsumerImpl<String>) consumer;

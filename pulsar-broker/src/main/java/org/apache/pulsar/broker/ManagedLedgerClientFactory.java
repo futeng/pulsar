@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,11 +19,11 @@
 package org.apache.pulsar.broker;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
 import io.netty.channel.EventLoopGroup;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import org.apache.bookkeeper.client.BookKeeper;
 import org.apache.bookkeeper.conf.ClientConfiguration;
@@ -49,7 +49,7 @@ public class ManagedLedgerClientFactory implements ManagedLedgerStorage {
     private ManagedLedgerFactory managedLedgerFactory;
     private BookKeeper defaultBkClient;
     private final Map<EnsemblePlacementPolicyConfig, BookKeeper>
-            bkEnsemblePolicyToBkClientMap = Maps.newConcurrentMap();
+            bkEnsemblePolicyToBkClientMap = new ConcurrentHashMap<>();
     private StatsProvider statsProvider = new NullStatsProvider();
 
     public void initialize(ServiceConfiguration conf, MetadataStoreExtended metadataStore,
@@ -63,13 +63,19 @@ public class ManagedLedgerClientFactory implements ManagedLedgerStorage {
         managedLedgerFactoryConfig.setCacheEvictionTimeThresholdMillis(
                 conf.getManagedLedgerCacheEvictionTimeThresholdMillis());
         managedLedgerFactoryConfig.setCopyEntriesInCache(conf.isManagedLedgerCacheCopyEntries());
+        managedLedgerFactoryConfig.setManagedLedgerMaxReadsInFlightSize(
+                conf.getManagedLedgerMaxReadsInFlightSizeInMB() * 1024L * 1024L);
         managedLedgerFactoryConfig.setPrometheusStatsLatencyRolloverSeconds(
                 conf.getManagedLedgerPrometheusStatsLatencyRolloverSeconds());
         managedLedgerFactoryConfig.setTraceTaskExecution(conf.isManagedLedgerTraceTaskExecution());
         managedLedgerFactoryConfig.setCursorPositionFlushSeconds(conf.getManagedLedgerCursorPositionFlushSeconds());
         managedLedgerFactoryConfig.setManagedLedgerInfoCompressionType(conf.getManagedLedgerInfoCompressionType());
+        managedLedgerFactoryConfig.setManagedLedgerInfoCompressionThresholdInBytes(
+                conf.getManagedLedgerInfoCompressionThresholdInBytes());
         managedLedgerFactoryConfig.setStatsPeriodSeconds(conf.getManagedLedgerStatsPeriodSeconds());
         managedLedgerFactoryConfig.setManagedCursorInfoCompressionType(conf.getManagedCursorInfoCompressionType());
+        managedLedgerFactoryConfig.setManagedCursorInfoCompressionThresholdInBytes(
+                conf.getManagedCursorInfoCompressionThresholdInBytes());
 
         Configuration configuration = new ClientConfiguration();
         if (conf.isBookkeeperClientExposeStatsToPrometheus()) {
@@ -106,8 +112,14 @@ public class ManagedLedgerClientFactory implements ManagedLedgerStorage {
             return bkClient != null ? bkClient : defaultBkClient;
         };
 
-        this.managedLedgerFactory =
-                new ManagedLedgerFactoryImpl(metadataStore, bkFactory, managedLedgerFactoryConfig, statsLogger);
+        try {
+            this.managedLedgerFactory =
+                    new ManagedLedgerFactoryImpl(metadataStore, bkFactory, managedLedgerFactoryConfig, statsLogger);
+        } catch (Exception e) {
+            statsProvider.stop();
+            defaultBkClient.close();
+            throw e;
+        }
     }
 
     public ManagedLedgerFactory getManagedLedgerFactory() {
@@ -152,17 +164,15 @@ public class ManagedLedgerClientFactory implements ManagedLedgerStorage {
                 // factory, however that might be introducing more unknowns.
                 log.warn("Encountered exceptions on closing bookkeeper client", ree);
             }
-            if (bkEnsemblePolicyToBkClientMap != null) {
-                bkEnsemblePolicyToBkClientMap.forEach((policy, bk) -> {
-                    try {
-                        if (bk != null) {
-                            bk.close();
-                        }
-                    } catch (Exception e) {
-                        log.warn("Failed to close bookkeeper-client for policy {}", policy, e);
+            bkEnsemblePolicyToBkClientMap.forEach((policy, bk) -> {
+                try {
+                    if (bk != null) {
+                        bk.close();
                     }
-                });
-            }
+                } catch (Exception e) {
+                    log.warn("Failed to close bookkeeper-client for policy {}", policy, e);
+                }
+            });
             log.info("Closed BookKeeper client");
         } catch (Exception e) {
             log.warn(e.getMessage(), e);
